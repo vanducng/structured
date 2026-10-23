@@ -74,7 +74,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     }
     let scroll = scroll.min(lines.len().saturating_sub(1));
     let block = if lines.len() > scroll + height {
-        block.title_bottom(Line::styled(" ↓ more · ctrl-e ", theme::muted()).right_aligned())
+        block.title_bottom(Line::styled(" ↓ more · J ", theme::muted()).right_aligned())
     } else {
         block
     };
@@ -193,6 +193,15 @@ fn properties(lines: &mut Vec<Line<'static>>, task: &Task, total: usize) {
             vec![Span::styled(
                 format!("{} Done", theme::DONE),
                 Style::new().fg(theme::GOOD),
+            )],
+        );
+    } else if crate::agenda::Clock::now().late(task) {
+        property(
+            lines,
+            "Status",
+            vec![Span::styled(
+                "Late, still open",
+                Style::new().fg(theme::WARN),
             )],
         );
     }

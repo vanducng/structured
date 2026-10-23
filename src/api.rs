@@ -1,3 +1,4 @@
+use chrono::{Duration, NaiveDate};
 use serde_json::{Value, json};
 
 use crate::clock;
@@ -26,6 +27,8 @@ pub struct Patch {
     pub duration: Option<i64>,
     pub all_day: Option<bool>,
     pub inbox: bool,
+    /// Send the zone on screen with the new day or time; set by `anchor`.
+    pub zoned: bool,
 }
 
 #[derive(Default)]
@@ -42,27 +45,51 @@ pub fn account(session: &mut Session) -> Result<Value> {
 }
 
 pub fn today(session: &mut Session) -> Result<Vec<Task>> {
-    session.tasks("get_today", json!({"timezone": model::timezone()}))
+    let today = clock::today();
+    span(session, today, today)
 }
 
 pub fn day(session: &mut Session, day: &str) -> Result<Vec<Task>> {
-    session.tasks(
-        "get_tasks_for_day",
-        json!({"day": day, "timezone": model::timezone()}),
+    let day = clock::parse_stamp(day).ok_or_else(|| Error::usage(format!("bad day {day}")))?;
+    span(session, day, day)
+}
+
+/// Yesterday, today, and tomorrow, so the rolling window can span midnight in either direction.
+pub fn around_now(session: &mut Session) -> Result<Vec<Task>> {
+    let today = clock::today();
+    span(
+        session,
+        today - Duration::days(1),
+        today + Duration::days(1),
     )
+}
+
+fn span(session: &mut Session, from: NaiveDate, to: NaiveDate) -> Result<Vec<Task>> {
+    let (from, to) = (clock::stamp(from), clock::stamp(to));
+    let filter = Filter {
+        from: Some(&from),
+        to: Some(&to),
+        ..Filter::default()
+    };
+    Ok(list(session, &filter)?.0)
 }
 
 pub fn inbox(session: &mut Session) -> Result<Vec<Task>> {
     session.tasks("get_inbox", json!({}))
 }
 
-pub fn list(session: &mut Session, filter: &Filter) -> Result<Vec<Task>> {
-    let mut args = json!({"timezone": model::timezone(), "limit": filter.limit.unwrap_or(200)});
-    if let Some(from) = filter.from {
-        args["day_from"] = json!(from);
+/// Tasks on `from..=to` in the zone on screen, and whether the server stopped at the limit.
+/// A settled task can sit one day off the day it is filed under, so ask one day wider each side.
+pub fn list(session: &mut Session, filter: &Filter) -> Result<(Vec<Task>, bool)> {
+    let limit = filter.limit.unwrap_or(200);
+    let mut args = json!({"timezone": model::timezone(), "limit": limit});
+    let from = filter.from.and_then(clock::parse_stamp);
+    let to = filter.to.and_then(clock::parse_stamp);
+    if let Some(from) = from {
+        args["day_from"] = json!(clock::stamp(from - Duration::days(1)));
     }
-    if let Some(to) = filter.to {
-        args["day_to"] = json!(to);
+    if let Some(to) = to {
+        args["day_to"] = json!(clock::stamp(to + Duration::days(1)));
     }
     if let Some(completed) = filter.completed {
         args["is_completed"] = json!(completed);
@@ -70,13 +97,24 @@ pub fn list(session: &mut Session, filter: &Filter) -> Result<Vec<Task>> {
     if let Some(search) = filter.search {
         args["title_contains"] = json!(search);
     }
-    session.tasks("list_tasks", args)
+    let mut tasks = session.tasks("list_tasks", args)?;
+    let truncated = tasks.len() >= usize::from(limit);
+    tasks.retain(|task| {
+        let Some(day) = task.day.as_deref().and_then(clock::parse_stamp) else {
+            return true;
+        };
+        from.is_none_or(|from| day >= from) && to.is_none_or(|to| day <= to)
+    });
+    Ok((tasks, truncated))
 }
 
 /// The server has no get-by-id, so look where a task can live: its day, today, the inbox, then nearby days.
 pub fn find(session: &mut Session, task: &TaskRef) -> Result<Task> {
     if let TaskRef::Occurrence { day: on, .. } = task {
-        return pick(day(session, on)?, task).unwrap_or_else(|| Err(not_found(task)));
+        let args =
+            json!({"day_from": on, "day_to": on, "timezone": model::timezone(), "limit": 200});
+        let filed = session.tasks("list_tasks", args)?;
+        return pick(filed, task).unwrap_or_else(|| Err(not_found(task)));
     }
     if let Some(found) = pick(today(session)?, task) {
         return found;
@@ -84,7 +122,7 @@ pub fn find(session: &mut Session, task: &TaskRef) -> Result<Task> {
     if let Some(found) = pick(inbox(session)?, task) {
         return found;
     }
-    if let Some(found) = pick(list(session, &Filter::default())?, task) {
+    if let Some(found) = pick(list(session, &Filter::default())?.0, task) {
         return found;
     }
     let today = clock::today();
@@ -95,7 +133,7 @@ pub fn find(session: &mut Session, task: &TaskRef) -> Result<Task> {
         to: Some(&to),
         ..Filter::default()
     };
-    pick(list(session, &past)?, task).unwrap_or_else(|| Err(not_found(task)))
+    pick(list(session, &past)?.0, task).unwrap_or_else(|| Err(not_found(task)))
 }
 
 /// A recurring day's plain id is a common slip; point at the ref that works instead.
@@ -131,6 +169,40 @@ fn refresh_steps() -> Vec<String> {
         "structured today --json".into(),
         "structured list --from YYYY-MM-DD --to YYYY-MM-DD --json".into(),
     ]
+}
+
+/// Rewrites a day or time typed in the zone on screen into update_task's terms: start_time counts
+/// from midnight of the day the task is filed under. A one-off task is filed again under the day on
+/// screen; a recurring day keeps its day and gets the time in its own zone, so no series is re-zoned.
+pub fn anchor(current: &Task, task: &TaskRef, patch: &mut Patch) {
+    let occurrence = task.is_occurrence();
+    if patch.all_day == Some(true) {
+        if !occurrence && patch.day.is_none() && current.listed_day.is_some() {
+            patch.day = current.day.clone();
+        }
+        return;
+    }
+    if patch.day.is_none() && patch.start_time.is_none() {
+        return;
+    }
+    let Some(start) = patch.start_time.or(current.timed()) else {
+        return;
+    };
+    if occurrence && patch.day.is_none() {
+        let shown = current.day.as_deref().and_then(clock::parse_stamp);
+        let filed = current.listed_day().and_then(clock::parse_stamp);
+        let rebased = match (current.zone(), clock::screen_zone(), shown, filed) {
+            (Some(own), Some(screen), Some(shown), Some(filed)) => {
+                clock::rebase(shown, start, screen, filed, own)
+            }
+            _ => None,
+        };
+        patch.start_time = Some(rebased.unwrap_or(start));
+        return;
+    }
+    patch.zoned = current.zone().is_some() || (current.timed().is_none() && !occurrence);
+    patch.day = patch.day.take().or_else(|| current.day.clone());
+    patch.start_time = Some(start);
 }
 
 /// How far an edit on one day of a recurring task reaches.
@@ -225,6 +297,9 @@ fn edit_args(task: &TaskRef, patch: Patch, scope: Option<Scope>) -> Result<Value
     }
     if args.as_object().map_or(0, serde_json::Map::len) == before {
         return Err(Error::usage("edit needs at least one change"));
+    }
+    if patch.zoned {
+        args["timezone"] = json!(model::timezone());
     }
     if task.is_occurrence() {
         let action = match scope {
@@ -324,6 +399,7 @@ pub fn task_in(result: &Value) -> Option<Task> {
         .or_else(|| result.get("title").map(|_| result))?;
     let mut task: Task = serde_json::from_value(task.clone()).ok()?;
     task.is_completed = task.done();
+    task.settle();
     Some(task)
 }
 
@@ -374,6 +450,7 @@ mod tests {
         let args = edit_args(&occurrence, title(), Some(Scope::Series)).unwrap();
         assert_eq!(args["update_action"], "all");
         assert_eq!(args["day"], "2026-10-24");
+        assert!(args.get("timezone").is_none());
         let args = edit_args(&occurrence, title(), Some(Scope::Day)).unwrap();
         assert_eq!(args["update_action"], "only_this");
         assert!(matches!(
@@ -389,6 +466,97 @@ mod tests {
             edit_args(&occurrence, Patch::default(), Some(Scope::Day)),
             Err(Error::Usage { .. })
         ));
+    }
+
+    #[test]
+    fn anchor_turns_screen_times_into_filed_day_terms() {
+        let mut shown = Task {
+            id: Some("a".into()),
+            day: Some("2026-10-24".into()),
+            start_time: Some(-11.0),
+            ..Task::default()
+        };
+        shown
+            .extra
+            .insert("timezone".into(), json!("America/New_York"));
+        shown.settle();
+        assert_eq!(shown.day.as_deref(), Some("2026-10-23"));
+        assert_eq!(shown.start_time, Some(13.0));
+        let one_off = TaskRef::Id("a".into());
+
+        let mut patch = Patch {
+            start_time: Some(10.0),
+            ..Patch::default()
+        };
+        anchor(&shown, &one_off, &mut patch);
+        assert_eq!(patch.day.as_deref(), Some("2026-10-23"));
+        assert_eq!(patch.start_time, Some(10.0));
+        assert!(patch.zoned);
+
+        let mut patch = Patch {
+            day: Some("2026-10-25".into()),
+            ..Patch::default()
+        };
+        anchor(&shown, &one_off, &mut patch);
+        assert_eq!(patch.day.as_deref(), Some("2026-10-25"));
+        assert_eq!(patch.start_time, Some(13.0));
+
+        let occurrence = TaskRef::Occurrence {
+            recurring_id: "r".into(),
+            day: "2026-10-24".into(),
+        };
+        let mut patch = Patch {
+            start_time: Some(14.0),
+            ..Patch::default()
+        };
+        anchor(&shown, &occurrence, &mut patch);
+        assert_eq!(patch.day, None);
+        assert!(!patch.zoned, "a recurring day keeps its own zone");
+
+        let mut all_day = Patch {
+            all_day: Some(true),
+            ..Patch::default()
+        };
+        anchor(&shown, &one_off, &mut all_day);
+        assert_eq!(all_day.day.as_deref(), Some("2026-10-23"));
+
+        let floating = Task {
+            recurring_id: Some("r".into()),
+            is_recurring: true,
+            day: Some("2026-10-24".into()),
+            start_time: Some(8.0),
+            ..Task::default()
+        };
+        let mut patch = Patch {
+            start_time: Some(7.0),
+            ..Patch::default()
+        };
+        anchor(&floating, &occurrence, &mut patch);
+        assert_eq!(patch.start_time, Some(7.0));
+        assert!(!patch.zoned);
+
+        let routine = Task {
+            is_all_day: true,
+            start_time: None,
+            ..floating.clone()
+        };
+        let mut patch = Patch {
+            start_time: Some(7.0),
+            ..Patch::default()
+        };
+        anchor(&routine, &occurrence, &mut patch);
+        assert_eq!(patch.start_time, Some(7.0));
+        assert!(
+            !patch.zoned,
+            "an all-day routine given a time stays floating"
+        );
+
+        let mut title_only = Patch {
+            title: Some("x".into()),
+            ..Patch::default()
+        };
+        anchor(&shown, &one_off, &mut title_only);
+        assert!(title_only.day.is_none() && !title_only.zoned);
     }
 
     #[test]

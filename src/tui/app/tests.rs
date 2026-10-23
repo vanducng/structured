@@ -3,6 +3,7 @@ use std::sync::mpsc;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::input::{filter_key, prompt_key};
+use super::keys::list_key_for_test as keys_for_test;
 use super::schedule;
 use super::*;
 use crate::config::UiConfig;
@@ -427,4 +428,43 @@ fn holds_are_released_only_by_a_reload_of_their_own_view() {
     assert!(app.add_subtask("again".into()).is_none());
     app.apply_load(epoch, CacheKey::Today, vec![day], true);
     assert!(app.add_subtask("again".into()).is_some());
+}
+
+#[test]
+fn the_home_view_is_a_rolling_window_and_w_switches_to_the_day() {
+    let today = crate::clock::today();
+    let on = |offset: i64, title: &str| Task {
+        id: Some(title.into()),
+        title: title.into(),
+        day: Some(crate::clock::stamp(today + chrono::Duration::days(offset))),
+        is_all_day: true,
+        ..Task::default()
+    };
+    let mut app = app_with(vec![
+        on(-1, "carried over"),
+        on(0, "today"),
+        on(5, "next week"),
+    ]);
+    app.window = true;
+    let titles: Vec<&str> = app.visible().iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, ["carried over", "today"]);
+    assert_eq!(app.layout(), crate::agenda::Layout::Window);
+    let (tx, _rx) = mpsc::channel();
+    keys_for_test(&mut app, &tx, KeyCode::Char('w'));
+    assert!(!app.window);
+    assert_eq!(app.want, Some(CacheKey::Today));
+    keys_for_test(&mut app, &tx, KeyCode::Char('J'));
+    assert_eq!(app.detail_scroll, 3);
+    keys_for_test(&mut app, &tx, KeyCode::Char('K'));
+    assert_eq!(app.detail_scroll, 0);
+}
+
+#[test]
+fn zone_key_explains_itself_without_two_zones() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = app_with(vec![task("plan", false)]);
+    keys_for_test(&mut app, &tx, KeyCode::Char('z'));
+    assert!(app.status.text.contains("timezones"));
+    assert_eq!(app.tasks.len(), 1);
+    assert_eq!(app.want, None);
 }

@@ -22,7 +22,7 @@ Launch builds `target/debug/structured` and starts `structured tui` in a new tmu
 
 Two modes:
 
-- `--fixture` starts `scripts/fixture-server.py`, a local stand-in for Structured Cloud with generic tasks dated around today, and points the binary at it through `STRUCTURED_MCP_URL`. Writes are safe here and every tool call lands in `evidence/calls.jsonl`. Use this for screenshots, critic reviews, and every write proof.
+- `--fixture` starts `scripts/fixture-server.py`, a local stand-in for Structured Cloud with generic tasks dated around today, and points the binary at it through `STRUCTURED_MCP_URL`. Writes are safe here and every tool call lands in `evidence/calls.jsonl`. Like the real server, the fixture keeps each task's filed day and counts a zoned time from that day's midnight in the `timezone` each call names; recurring tasks float. Add `--config FILE` to give the run a `config.toml`, for example to open on the 24h view or to list time zones. Use this for screenshots, critic reviews, and every write proof.
 - Without `--fixture` the run uses the person's own config in place and reads their real account. Use it only to prove that real data renders. It never copies `auth.json`: a token refresh inside a copy would rotate the refresh token and could sign the person out. The person signs in once with `structured login`. Launch never prints the auth file.
 
 The session is not the user's open TUI. Refuse to drive any tmux session this run did not create.
@@ -53,11 +53,11 @@ Send keys only through the helper. One argument is one key. `Escape`, `Enter`, `
 
 Stable handles are the text the UI draws, not coordinates:
 
-- Header: the long date and `Today`, or `Inbox` and `N open`, plus the week strip and `Inbox N`.
-- List title: `Today · N tasks`, `Inbox · N tasks`, or a date, with `/query` while a search is applied. Right side: `N done` and `planned`.
+- Header: the long date and `Today`, `Now` in the 24h view, or `Inbox` and `N open`, plus the week strip and `Inbox N`. With `timezones` configured it ends with the zone clock, like `02:39 Saigon`.
+- List title: `Today · N tasks` (day view), `Now · N tasks` (24h view), `Inbox · N tasks`, or a date, with `/query` while a search is applied. Right side: `N late` in yellow when any, `N done`, and `planned`.
 - Footer in the list: `⏎ subtasks`, `x done`, `f find`, `m min`, `? help`. In the checklist: a `SUBTASKS` chip and `x tick`, `h back`.
 - Footer chips: `FIND` with `/query`, a prompt name (`NEW TASK`, `TITLE`, `DATE`, `TIME`, `DURATION`, `NEW SUBTASK`, `SUBTASK`) plus `every repeat` or `this day only` on a recurring task, `DELETE`, `HELP`.
-- Status: `● saving…`, `✓ saved`, `✓ subtasks saved`, `✗ <error>`, `· task kept`, and `● finishing N saves, q again quits now` after `q` with saves pending.
+- Status: `· times in LABEL` after `z`, `· 24h view, …` and `· day view, …` after `w`, `● saving…`, `✓ saved`, `✓ subtasks saved`, `✗ <error>`, `· task kept`, and `● finishing N saves, q again quits now` after `q` with saves pending.
 - Help modal: `Keys`, `next, previous`, `minutes`, `Subtasks`.
 - Confirm modal: `Delete task` or `Delete subtask`, and `y delete`.
 

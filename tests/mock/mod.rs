@@ -52,6 +52,10 @@ impl Mock {
         cmd
     }
 
+    pub fn config_toml(&self, text: &str) {
+        std::fs::write(self.config.join("structured/config.toml"), text).expect("config");
+    }
+
     pub fn calls(&self) -> Vec<Value> {
         self.calls.lock().expect("calls").clone()
     }

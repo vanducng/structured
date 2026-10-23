@@ -1,3 +1,4 @@
+use crate::agenda::{Clock, Layout};
 use crate::api::{NewTask, Patch, Scope};
 use crate::model::{Task, TaskRef};
 
@@ -105,6 +106,7 @@ impl App {
         if previous.day.is_none() && patch.day.is_some() {
             patch.all_day = Some(true);
         }
+        crate::api::anchor(&previous, &task_ref, &mut patch);
         let moves = matches!(spec, Spec::Date(_));
         let scope = Some(if moves { Scope::Day } else { Scope::Series });
         let detaches = moves && task_ref.is_occurrence();
@@ -438,6 +440,11 @@ fn apply_spec(task: &mut Task, spec: &Spec) {
         Spec::Clock(ClockChoice::AllDay) => {
             task.is_all_day = true;
             task.start_time = None;
+            if task.is_recurring
+                && let Some(filed) = task.listed_day.take()
+            {
+                task.day = Some(filed);
+            }
         }
         Spec::Clock(ClockChoice::At { start, duration }) => {
             task.is_all_day = false;
@@ -451,10 +458,19 @@ fn apply_spec(task: &mut Task, spec: &Spec) {
 }
 
 fn leaves_view(app: &App, task: &Task) -> bool {
-    if app.inbox {
-        return !task.is_in_inbox;
+    match app.layout() {
+        Layout::Inbox => !task.is_in_inbox,
+        Layout::Window => {
+            let days = Clock::now().window_days();
+            task.is_in_inbox
+                || !days
+                    .iter()
+                    .any(|day| task.day.as_deref() == Some(day.as_str()))
+        }
+        Layout::Day { .. } => {
+            task.is_in_inbox || task.day.as_deref() != Some(super::day_string(app.offset).as_str())
+        }
     }
-    task.is_in_inbox || task.day.as_deref() != Some(super::day_string(app.offset).as_str())
 }
 
 fn blank(title: &str, day: Option<String>, inbox: bool) -> Task {

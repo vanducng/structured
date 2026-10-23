@@ -33,14 +33,15 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(paragraph, rect);
         return;
     }
-    let today = !app.inbox && app.offset == 0;
-    let rows = if app.query.is_empty() {
-        agenda::rows(&visible, app.inbox, today.then(clock::now_hours))
+    let clock = agenda::Clock::now();
+    let rows = if app.query.is_empty() || app.layout() == agenda::Layout::Window {
+        agenda::rows(&visible, app.layout(), &clock)
     } else {
         (0..visible.len())
             .map(|index| Row::Task {
                 index,
                 overlap: false,
+                late: clock.late(visible[index]),
             })
             .collect()
     };
@@ -74,6 +75,8 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
 fn title(app: &App, visible: &[&Task]) -> Vec<Span<'static>> {
     let place = if app.inbox {
         "Inbox".to_owned()
+    } else if app.layout() == agenda::Layout::Window {
+        "Now".to_owned()
     } else {
         clock::relative(app.viewed_day())
             .filter(|word| matches!(word.as_str(), "today" | "tomorrow" | "yesterday"))
@@ -103,12 +106,23 @@ fn title(app: &App, visible: &[&Task]) -> Vec<Span<'static>> {
 
 fn summary(app: &App, visible: &[&Task]) -> Vec<Span<'static>> {
     let done = visible.iter().filter(|task| task.done()).count();
+    let clock = agenda::Clock::now();
+    let late = visible.iter().filter(|task| clock.late(task)).count();
+    let mut spans = Vec::new();
+    if late > 0 && !app.inbox {
+        spans.push(Span::styled(
+            format!(" {late} late "),
+            Style::new().fg(theme::WARN),
+        ));
+        spans.push(Span::styled("·", theme::muted()));
+    }
     let mut text = format!(" {done} done ");
     let planned = clock::duration(agenda::planned_minutes(visible));
     if !app.inbox && !planned.is_empty() {
         text = format!(" {done} done · {planned} planned ");
     }
-    vec![Span::styled(text, theme::muted())]
+    spans.push(Span::styled(text, theme::muted()));
+    spans
 }
 
 fn empty_state(app: &App) -> Vec<Line<'static>> {
@@ -161,7 +175,11 @@ fn render(row: &Row, tasks: &[&Task], view: &RowView) -> Line<'static> {
                 Span::styled(" now", Style::new().fg(theme::BAD)),
             ])
         }
-        Row::Task { index, overlap } => task_line(tasks[*index], *overlap, view),
+        Row::Task {
+            index,
+            overlap,
+            late,
+        } => task_line(tasks[*index], *overlap, *late, view),
     }
 }
 
@@ -178,7 +196,7 @@ impl RowView<'_> {
     }
 }
 
-fn task_line(task: &Task, overlap: bool, view: &RowView) -> Line<'static> {
+fn task_line(task: &Task, overlap: bool, late: bool, view: &RowView) -> Line<'static> {
     let color = theme::task_color(task.color.as_deref());
     let done = task.done();
     let compact = view.compact();
@@ -186,7 +204,7 @@ fn task_line(task: &Task, overlap: bool, view: &RowView) -> Line<'static> {
     if !view.inbox {
         let when = task.timed().map(clock::clock).unwrap_or_default();
         let style = match () {
-            _ if overlap && compact => Style::new().fg(theme::WARN),
+            _ if (overlap || late) && compact => Style::new().fg(theme::WARN),
             _ if done => theme::faint(),
             _ => theme::muted(),
         };
@@ -203,7 +221,9 @@ fn task_line(task: &Task, overlap: bool, view: &RowView) -> Line<'static> {
     });
 
     let mut right = Vec::new();
-    if overlap && !compact {
+    if late && !compact {
+        right.push(Span::styled(" late", Style::new().fg(theme::WARN)));
+    } else if overlap && !compact {
         right.push(Span::styled(" overlap", Style::new().fg(theme::WARN)));
     }
     if let Some((finished, all)) = task.subtask_progress() {

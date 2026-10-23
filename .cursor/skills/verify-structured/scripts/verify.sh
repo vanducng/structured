@@ -26,11 +26,12 @@ need_run() {
 launch() {
   local run_id=$1
   shift
-  local fixture=0 size=120x32
+  local fixture=0 size=120x32 config_file=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --fixture) fixture=1 ;;
       --size) size=$2; shift ;;
+      --config) config_file=$2; shift ;;
       *) die "unknown launch flag $1" ;;
     esac
     shift
@@ -57,7 +58,9 @@ launch() {
     printf '{"client_id":"fixture","access_token":"fixture","refresh_token":"","expires_at":4102444800}\n' \
       >"$config_home/structured/auth.json"
     chmod 600 "$config_home/structured/auth.json"
+    [[ -z "$config_file" ]] || cp "$config_file" "$config_home/structured/config.toml"
   else
+    [[ -z "$config_file" ]] || die "--config is for fixture runs; live runs read the person's own config"
     # Live runs use the person's own config: a refresh in a copy would rotate and orphan their token.
     config_home=${XDG_CONFIG_HOME:-$HOME/.config}
     [[ -f "$config_home/structured/auth.json" ]] || die "missing auth.json; sign in with structured login in a terminal"

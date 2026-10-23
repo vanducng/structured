@@ -74,7 +74,11 @@ fn stdout_json(output: &std::process::Output) -> Value {
 #[test]
 fn task_json_carries_a_ref_and_subtasks() {
     let mock = Mock::start(fixture);
-    let output = mock.cmd().args(["today", "--json"]).output().unwrap();
+    let output = mock
+        .cmd()
+        .args(["day", "2026-10-23", "--json"])
+        .output()
+        .unwrap();
     assert!(output.status.success());
     let task = &stdout_json(&output)["tasks"][0];
     assert_eq!(task["ref"], format!("{RID}@2026-10-23"));
@@ -116,7 +120,7 @@ fn ticking_an_occurrence_subtask_is_completion_only() {
         .args(["subtask", "done", &target, "1", "--json"])
         .assert()
         .success();
-    assert_eq!(mock.call("get_tasks_for_day")["day"], "2026-10-23");
+    assert_eq!(mock.call("list_tasks")["day_from"], "2026-10-23");
     let args = mock.call("update_task");
     assert_eq!(args["recurring_id"], RID);
     assert_eq!(args["day"], "2026-10-23");
@@ -326,7 +330,10 @@ fn list_filters_map_to_server_arguments() {
         .assert()
         .success();
     let args = mock.call("list_tasks");
-    assert_eq!(args["day_from"], "2026-10-01");
+    assert_eq!(
+        args["day_from"], "2026-09-30",
+        "one day wider for times filed on a neighbor"
+    );
     assert_eq!(args["is_completed"], false);
     assert_eq!(args["title_contains"], "run");
     assert_eq!(args["limit"], 5);
@@ -338,7 +345,7 @@ fn piped_account_is_json_and_text_flag_prints_a_timeline() {
     let output = mock.cmd().arg("account").output().unwrap();
     assert_eq!(stdout_json(&output)["ok"], true);
     mock.cmd()
-        .args(["today", "--text"])
+        .args(["day", "2026-10-23", "--text"])
         .assert()
         .success()
         .stdout(predicate::str::contains("All day"))
@@ -424,4 +431,143 @@ fn previews_and_no_op_ticks_send_nothing() {
             .iter()
             .all(|call| call["tool"] != "update_task" && call["tool"] != "delete_task")
     );
+}
+
+#[test]
+fn now_spans_yesterday_and_marks_unfinished_work_late() {
+    let today = chrono::Local::now().date_naive();
+    let stamp = |offset: i64| {
+        (today + chrono::Duration::days(offset))
+            .format("%Y-%m-%d")
+            .to_string()
+    };
+    let (yesterday, now_day) = (stamp(-1), stamp(0));
+    let mock = Mock::start(move |tool, _| match tool {
+        "list_tasks" => json!({"tasks": [
+            {"id": "y1", "title": "Report", "day": yesterday, "is_all_day": true},
+            {"id": "y2", "title": "Laundry", "day": yesterday, "is_all_day": true, "completed_at": "2026-01-01T00:00:00Z"},
+            {"id": "t1", "title": "Plan", "day": now_day, "is_all_day": true}
+        ]}),
+        _ => json!({"tasks": []}),
+    });
+    let output = mock.cmd().args(["now", "--json"]).output().unwrap();
+    let tasks = stdout_json(&output)["tasks"].as_array().unwrap().clone();
+    let titles: Vec<&str> = tasks.iter().map(|t| t["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, ["Report", "Plan"]);
+    assert_eq!(tasks[0]["late"], true);
+    assert_eq!(tasks[1]["late"], false);
+}
+
+#[test]
+fn days_and_times_follow_the_configured_zone_and_tz_overrides_it() {
+    let mock = Mock::start(fixture);
+    mock.config_toml("timezones = [\"ET=America/New_York\", \"Saigon=Asia/Ho_Chi_Minh\"]\n");
+    mock.cmd()
+        .args(["add", "Call", "--time", "09:30", "--json"])
+        .assert()
+        .success();
+    let args = mock.call("create_task");
+    assert_eq!(args["timezone"], "America/New_York");
+    let new_york = chrono::Utc::now()
+        .with_timezone(&chrono_tz::America::New_York)
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    assert_eq!(args["day"], new_york);
+
+    let output = mock
+        .cmd()
+        .args([
+            "edit",
+            "task-1",
+            "--time",
+            "10:00",
+            "--tz",
+            "saigon",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let result = &stdout_json(&output)["result"];
+    assert_eq!(result["arguments"]["timezone"], "Asia/Ho_Chi_Minh");
+
+    let before = mock.calls().len();
+    let output = mock
+        .cmd()
+        .args(["today", "--tz", "Mars/Base", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ET, Saigon"));
+    assert_eq!(mock.calls().len(), before);
+}
+
+#[test]
+fn a_time_before_midnight_of_its_filed_day_shows_on_the_day_it_lands() {
+    let today = chrono::Local::now().date_naive();
+    let stamp = |offset: i64| {
+        (today + chrono::Duration::days(offset))
+            .format("%Y-%m-%d")
+            .to_string()
+    };
+    let tomorrow = stamp(1);
+    let mock = Mock::start(move |tool, _| match tool {
+        "list_tasks" => json!({"tasks": [
+            {"id": "n1", "title": "Call", "day": tomorrow, "start_time": -11.0, "duration": 30, "timezone": "Asia/Ho_Chi_Minh"},
+            {"id": "n2", "title": "Later", "day": tomorrow, "start_time": 9.0, "timezone": "Asia/Ho_Chi_Minh"}
+        ]}),
+        _ => json!({"tasks": []}),
+    });
+    let output = mock.cmd().args(["today", "--json"]).output().unwrap();
+    let tasks = stdout_json(&output)["tasks"].as_array().unwrap().clone();
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    assert_eq!(tasks[0]["day"], stamp(0));
+    assert_eq!(tasks[0]["start_time"], 13.0);
+    let args = mock.call("list_tasks");
+    assert_eq!(args["day_from"], stamp(-1));
+    assert_eq!(args["day_to"], stamp(1));
+}
+
+#[test]
+fn a_time_edit_on_a_task_no_read_can_reach_still_goes_out() {
+    let mock = Mock::start(fixture);
+    mock.cmd()
+        .args(["edit", "far-away", "--time", "11:00", "--json"])
+        .assert()
+        .success();
+    let args = mock.call("update_task");
+    assert_eq!(args["id"], "far-away");
+    assert_eq!(args["start_time"], 11.0);
+    assert!(args.get("timezone").is_none());
+}
+
+#[test]
+fn a_recurring_time_edit_in_another_zone_is_said_in_the_tasks_own_zone() {
+    let mock = Mock::start(|tool, _| match tool {
+        "list_tasks" => json!({"tasks": [{"id": "z1", "recurring_id": "zr", "is_recurring": true,
+            "title": "Review", "day": "2026-10-24", "start_time": -11.0, "duration": 30,
+            "timezone": "Asia/Ho_Chi_Minh"}]}),
+        _ => json!({"ok": true}),
+    });
+    let output = mock
+        .cmd()
+        .args([
+            "edit",
+            "zr@2026-10-24",
+            "--time",
+            "08:00",
+            "--scope",
+            "series",
+            "--tz",
+            "America/New_York",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let args = &stdout_json(&output)["result"]["arguments"];
+    assert_eq!(args["start_time"], -5.0);
+    assert_eq!(args["day"], "2026-10-24");
+    assert!(args.get("timezone").is_none());
 }

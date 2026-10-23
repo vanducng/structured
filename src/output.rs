@@ -4,13 +4,14 @@ use std::fmt::Write as _;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::agenda::{self, Row};
+use crate::agenda::{self, Layout, Row};
 use crate::clock;
 use crate::error::Error;
 use crate::model::{Task, TaskRef};
 
 pub enum View {
     Day(chrono::NaiveDate),
+    Window,
     Inbox,
     Range,
 }
@@ -37,8 +38,11 @@ pub fn report(json: bool, err: &Error) {
 
 pub fn task_json(task: &Task) -> Value {
     let mut value = serde_json::to_value(task).unwrap_or(Value::Null);
-    if let (Some(object), Ok(task_ref)) = (value.as_object_mut(), task.task_ref()) {
-        object.insert("ref".into(), json!(task_ref.to_string()));
+    if let Some(object) = value.as_object_mut() {
+        if let Ok(task_ref) = task.task_ref() {
+            object.insert("ref".into(), json!(task_ref.to_string()));
+        }
+        object.insert("late".into(), json!(agenda::Clock::now().late(task)));
     }
     value
 }
@@ -85,8 +89,22 @@ pub fn render(view: View, tasks: &mut [Task]) -> String {
             if !planned.is_empty() {
                 let _ = write!(heading, " · {planned} planned");
             }
-            let now = (day == clock::today()).then(clock::now_hours);
-            section(&mut out, &heading, &refs, false, now);
+            let layout = Layout::Day {
+                now_line: day == clock::today(),
+            };
+            section(&mut out, &heading, &refs, layout);
+        }
+        View::Window => {
+            agenda::sort(tasks, false);
+            let now = agenda::Clock::now();
+            let refs: Vec<&Task> = tasks.iter().filter(|task| now.in_window(task)).collect();
+            let hours = agenda::WINDOW_HOURS as i64;
+            let heading = format!(
+                "Now · {} · {hours}h either side · {}",
+                clock::clock(now.hours),
+                counts(&refs)
+            );
+            section(&mut out, &heading, &refs, Layout::Window);
         }
         View::Inbox => {
             agenda::sort(tasks, true);
@@ -95,8 +113,7 @@ pub fn render(view: View, tasks: &mut [Task]) -> String {
                 &mut out,
                 &format!("Inbox · {}", counts(&refs)),
                 &refs,
-                true,
-                None,
+                Layout::Inbox,
             );
         }
         View::Range => {
@@ -114,12 +131,12 @@ pub fn render(view: View, tasks: &mut [Task]) -> String {
                 let refs: Vec<&Task> = group.iter().collect();
                 let title =
                     clock::parse_stamp(&day).map_or_else(|| "Inbox".into(), clock::long_date);
+                let layout = Layout::Day { now_line: false };
                 section(
                     &mut out,
                     &format!("{title} · {}", counts(&refs)),
                     &refs,
-                    false,
-                    None,
+                    layout,
                 );
             }
         }
@@ -129,20 +146,30 @@ pub fn render(view: View, tasks: &mut [Task]) -> String {
 
 fn counts(tasks: &[&Task]) -> String {
     let done = tasks.iter().filter(|task| task.done()).count();
+    let late = tasks
+        .iter()
+        .filter(|task| agenda::Clock::now().late(task))
+        .count();
+    let late = if late > 0 {
+        format!(", {late} late")
+    } else {
+        String::new()
+    };
     match tasks.len() {
-        1 => format!("1 task, {done} done"),
-        n => format!("{n} tasks, {done} done"),
+        1 => format!("1 task, {done} done{late}"),
+        n => format!("{n} tasks, {done} done{late}"),
     }
 }
 
-fn section(out: &mut String, heading: &str, tasks: &[&Task], inbox: bool, now: Option<f64>) {
+fn section(out: &mut String, heading: &str, tasks: &[&Task], layout: Layout) {
+    let inbox = layout == Layout::Inbox;
     let _ = writeln!(out, "{heading}\n");
     if tasks.is_empty() {
         let _ = writeln!(out, "  Nothing here\n");
         return;
     }
     let pad = if inbox { 2 } else { 21 };
-    for row in agenda::rows(tasks, inbox, now) {
+    for row in agenda::rows(tasks, layout, &agenda::Clock::now()) {
         match row {
             Row::Section(name) => {
                 let _ = writeln!(out, "  {name}");
@@ -153,7 +180,11 @@ fn section(out: &mut String, heading: &str, tasks: &[&Task], inbox: bool, now: O
             Row::Now(at) => {
                 let _ = writeln!(out, "{:pad$} --- now {} ---", "", clock::clock(at));
             }
-            Row::Task { index, overlap } => {
+            Row::Task {
+                index,
+                overlap,
+                late,
+            } => {
                 let task = tasks[index];
                 let mut line = if inbox {
                     "  ".to_owned()
@@ -171,7 +202,9 @@ fn section(out: &mut String, heading: &str, tasks: &[&Task], inbox: bool, now: O
                 if task.is_recurring {
                     line.push_str("  repeats");
                 }
-                if overlap {
+                if late {
+                    line.push_str("  ! late");
+                } else if overlap {
                     line.push_str("  ! overlaps");
                 }
                 let _ = writeln!(out, "{line}");
@@ -302,12 +335,13 @@ mod tests {
 
     #[test]
     fn day_text_is_a_timeline() {
+        let tomorrow = clock::stamp(clock::today() + chrono::Duration::days(1));
         let mut sub = Subtask::new("ma");
         sub.completed_at = Some("2026-10-23T02:00:00Z".into());
         let mut tasks = vec![
             Task {
                 title: "Billing export".into(),
-                day: Some("2026-10-23".into()),
+                day: Some(tomorrow.clone()),
                 start_time: Some(13.0),
                 duration: Some(210),
                 subtasks: vec![sub, Subtask::new("tests")],
@@ -315,15 +349,18 @@ mod tests {
             },
             Task {
                 title: "Run".into(),
-                day: Some("2026-10-23".into()),
+                day: Some(tomorrow.clone()),
                 is_all_day: true,
                 is_recurring: true,
                 ..Task::default()
             },
         ];
-        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 23).unwrap();
+        let day = clock::parse_stamp(&tomorrow).unwrap();
         let text = render(View::Day(day), &mut tasks);
-        assert!(text.starts_with("Fri 23 Oct 2026"), "{text}");
+        assert!(
+            text.starts_with(&format!("{} (tomorrow)", clock::long_date(day))),
+            "{text}"
+        );
         assert!(text.contains("2 tasks, 0 done · 3h 30m planned"), "{text}");
         assert!(text.contains("  All day\n"), "{text}");
         assert!(text.contains("[ ] Run  repeats"), "{text}");

@@ -8,6 +8,7 @@ use crate::model::{Subtask, Task, TaskRef};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::tui) enum CacheKey {
+    Now,
     Today,
     Inbox,
     Day(String),
@@ -122,6 +123,7 @@ fn dispatch(session: &mut Session, request: Request) -> Reply {
 
 fn fetch(session: &mut Session, key: &CacheKey) -> Result<Vec<Task>> {
     match key {
+        CacheKey::Now => api::around_now(session),
         CacheKey::Today => api::today(session),
         CacheKey::Inbox => api::inbox(session),
         CacheKey::Day(day) => api::day(session, day),
