@@ -15,11 +15,8 @@ const KEYS: &[(&str, Pair, Pair)] = &[
     ("Move", ("j k ↑ ↓", "move"), ("gg  G", "top, bottom")),
     ("", ("ctrl-d/u", "page"), ("", "")),
     ("Views", ("t", "today"), ("i", "inbox")),
-    (
-        "",
-        ("tab", "today or inbox"),
-        ("[ ]  ← →", "day before, after"),
-    ),
+    ("", ("w", "day or 24h view"), ("tab", "today or inbox")),
+    ("", ("[ ]  ← →", "prev, next day"), ("z", "next time zone")),
     ("Find", ("/  f", "search"), ("n  N", "next, previous")),
     ("", ("esc", "clear the search"), ("", "")),
     ("Task", ("x  space", "done or not"), ("a", "add")),
@@ -33,7 +30,7 @@ const KEYS: &[(&str, Pair, Pair)] = &[
     (
         "More",
         ("ctrl-g", "note in $EDITOR"),
-        ("ctrl-e/y", "scroll details"),
+        ("J  K", "scroll details"),
     ),
     ("", ("r", "refresh"), ("q", "quit")),
 ];

@@ -36,6 +36,9 @@ pub struct Cli {
     /// Print the request a write would send, and send nothing. Reads still run.
     #[arg(long, global = true)]
     pub dry_run: bool,
+    /// Read and write days and times in this zone: a label from config.toml's `timezones`, or an IANA name. Defaults to the first configured zone, then the system zone.
+    #[arg(long, global = true, value_name = "ZONE")]
+    pub tz: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -86,6 +89,8 @@ pub enum Command {
     Account,
     /// List today's tasks.
     Today,
+    /// List tasks 12 hours either side of now, across yesterday, today, and tomorrow.
+    Now,
     /// List one day's tasks.
     Day {
         /// YYYY-MM-DD, today, tomorrow, yesterday, +N, or -N.

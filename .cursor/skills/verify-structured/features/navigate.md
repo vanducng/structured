@@ -5,7 +5,10 @@ Navigate changes which task is selected and which day or inbox is on screen. Swi
 ## Sub-features
 
 - `nav-move` moves the highlight with `j`, `k`, `gg`, and `G`.
-- `nav-today` shows Today with `t`.
+- `nav-today` shows today with `t`, in whichever view is on.
+- `nav-window` switches today between the day view and the 24h view with `w`. The 24h view has headings `YESTERDAY · …` and `TODAY · …`, and `Now` in the header.
+- `nav-zone` switches to the next configured time zone with `z` and reloads.
+- `nav-detail-scroll` scrolls the details with `J` and `K`.
 - `nav-inbox` shows Inbox with `i`.
 - `nav-day` moves the viewed day with `[` and `]`.
 - `nav-switch` flips between the current day and Inbox with Tab.
@@ -27,7 +30,9 @@ Preconditions:
 - **Down.** `keys -- j`, `shot nav-down`. The highlighted row moves down one task and skips section, gap, and now rows. The details band shows the new task.
 - **Top.** `keys -- G g g`, `shot nav-top`. The first task row is highlighted.
 - **Inbox.** `keys -- i`, `capture nav-inbox`. The header starts with `Inbox` and `N open`, the `Inbox N` chip is highlighted, and the list title reads `Inbox · N tasks`. Press `t` afterward.
-- **Today.** `keys -- t`, `capture nav-today`. The header ends the date with `Today` and the list title starts with `Today`.
+- **Day view.** `keys -- t`, `capture nav-today`. The header shows `Today` and the list title starts with `Today`.
+- **24h view.** `keys -- w`, `capture nav-window`. The header shows `Now` and, when it fits, the window edges. The list title starts with `Now`, and a fixture run shows `YESTERDAY` with `Pair on the export job` marked `late`. `keys -- w` returns to the day view.
+- **Zone.** Launch with `--config` pointing at a file with `timezones = ["ET=America/New_York", "Saigon=Asia/Ho_Chi_Minh"]`. The header ends with the clock and `ET`. `keys -- z`, `capture nav-zone`. The header ends with `Saigon`, the status reads `times in Saigon`, and the fixture's timed tasks move by the offset between the zones.
 - **Next day.** `keys -- ]`, `shot nav-next-day`. The header reads `Tomorrow`, the week strip highlights the next day, and there is no now-line. Press `[` to return.
 
 ## Gotchas

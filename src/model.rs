@@ -62,6 +62,9 @@ pub struct Task {
     pub subtasks: Vec<Subtask>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+    /// The day the server files this task under, when `settle` moved it to another.
+    #[serde(skip)]
+    pub listed_day: Option<String>,
 }
 
 fn null_as_empty<'de, D: Deserializer<'de>>(
@@ -71,6 +74,36 @@ fn null_as_empty<'de, D: Deserializer<'de>>(
 }
 
 impl Task {
+    /// The server keeps a task's day in every zone and counts start_time from that day's midnight
+    /// in the zone asked for, so a time can fall outside 0..24; move it onto the day it lands on.
+    pub fn settle(&mut self) {
+        let (Some(start), Some(day)) = (
+            self.start_time,
+            self.day.as_deref().and_then(clock::parse_stamp),
+        ) else {
+            return;
+        };
+        let shift = (start / 24.0).floor();
+        if shift == 0.0 || self.is_all_day {
+            return;
+        }
+        self.listed_day = self.day.take();
+        self.day = Some(clock::stamp(day + chrono::Duration::days(shift as i64)));
+        self.start_time = Some(start - shift * 24.0);
+    }
+
+    pub fn listed_day(&self) -> Option<&str> {
+        self.listed_day.as_deref().or(self.day.as_deref())
+    }
+
+    /// The task's own zone. None means it floats: the same clock time wherever it is read.
+    pub fn zone(&self) -> Option<chrono_tz::Tz> {
+        self.extra
+            .get("timezone")
+            .and_then(Value::as_str)
+            .and_then(|name| name.parse().ok())
+    }
+
     pub fn done(&self) -> bool {
         self.is_completed || self.completed_at.as_ref().is_some_and(|v| !v.is_empty())
     }
@@ -108,7 +141,7 @@ impl Task {
     pub fn task_ref(&self) -> Result<TaskRef> {
         let id = self.id.as_deref().filter(|id| !id.is_empty());
         let recurring_id = self.recurring_id.as_deref().filter(|id| !id.is_empty());
-        let day = self.day.as_deref().filter(|day| !day.is_empty());
+        let day = self.listed_day().filter(|day| !day.is_empty());
         match (id, recurring_id, day) {
             (Some(id), _, _) if !self.is_recurring || recurring_id.is_none() => {
                 Ok(TaskRef::Id(id.to_owned()))
@@ -199,6 +232,7 @@ pub fn tasks_from_value(value: &Value) -> Option<Vec<Task>> {
     let mut tasks: Vec<Task> = serde_json::from_value(Value::Array(list.clone())).ok()?;
     for task in &mut tasks {
         task.is_completed = task.done();
+        task.settle();
     }
     Some(tasks)
 }
@@ -226,12 +260,36 @@ pub fn extract_json(text: &str) -> Result<Value> {
 }
 
 pub fn timezone() -> String {
-    iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into())
+    clock::zone_name()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settle_moves_out_of_range_times_and_keeps_the_filed_day_in_the_ref() {
+        let mut task = Task {
+            id: Some("o".into()),
+            recurring_id: Some("r".into()),
+            is_recurring: true,
+            day: Some("2026-10-24".into()),
+            start_time: Some(25.5),
+            ..Task::default()
+        };
+        task.settle();
+        assert_eq!(task.day.as_deref(), Some("2026-10-25"));
+        assert_eq!(task.start_time, Some(1.5));
+        assert_eq!(task.task_ref().unwrap().to_string(), "r@2026-10-24");
+        let mut plain = Task {
+            day: Some("2026-10-24".into()),
+            start_time: Some(8.0),
+            ..Task::default()
+        };
+        plain.settle();
+        assert_eq!(plain.day.as_deref(), Some("2026-10-24"));
+        assert_eq!(plain.listed_day, None);
+    }
 
     #[test]
     fn parses_wrapped_task_list_with_subtasks() {

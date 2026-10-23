@@ -1,14 +1,68 @@
-use chrono::{Datelike, Duration, Local, NaiveDate};
+use std::sync::RwLock;
+
+use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono_tz::Tz;
 
 use crate::error::{Error, Result};
 
-pub fn today() -> NaiveDate {
-    Local::now().date_naive()
+/// The zone every day, time, and API request is read in; None follows the system clock.
+static ZONE: RwLock<Option<Tz>> = RwLock::new(None);
+
+pub fn set_zone(zone: Option<Tz>) {
+    if let Ok(mut slot) = ZONE.write() {
+        *slot = zone;
+    }
 }
 
+pub fn zone() -> Option<Tz> {
+    ZONE.read().ok().and_then(|slot| *slot)
+}
+
+pub fn parse_zone(name: &str) -> Result<Tz> {
+    name.trim().parse::<Tz>().map_err(|_| {
+        Error::usage(format!(
+            "unknown time zone {name}, use an IANA name like America/New_York"
+        ))
+    })
+}
+
+/// The IANA name sent with reads and writes: the zone days and times are shown in.
+pub fn zone_name() -> String {
+    zone()
+        .map(|tz| tz.name().to_owned())
+        .unwrap_or_else(|| iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()))
+}
+
+pub fn screen_zone() -> Option<Tz> {
+    zone().or_else(|| parse_zone(&zone_name()).ok())
+}
+
+/// Hours from midnight of `filed` in `own` to `start` hours past midnight of `shown` in `screen`.
+pub fn rebase(shown: NaiveDate, start: f64, screen: Tz, filed: NaiveDate, own: Tz) -> Option<f64> {
+    let at = screen
+        .from_local_datetime(&shown.and_hms_opt(0, 0, 0)?)
+        .earliest()?
+        + Duration::seconds((start * 3600.0).round() as i64);
+    let base = own
+        .from_local_datetime(&filed.and_hms_opt(0, 0, 0)?)
+        .earliest()?;
+    Some((at - base).num_seconds() as f64 / 3600.0)
+}
+
+pub fn now() -> NaiveDateTime {
+    match zone() {
+        Some(tz) => Utc::now().with_timezone(&tz).naive_local(),
+        None => Local::now().naive_local(),
+    }
+}
+
+pub fn today() -> NaiveDate {
+    now().date()
+}
+
+/// Whole minutes, so the now-line reads the same minute as the header clock.
 pub fn now_hours() -> f64 {
-    let now = Local::now().time();
-    f64::from(chrono::Timelike::num_seconds_from_midnight(&now)) / 3600.0
+    f64::from(chrono::Timelike::num_seconds_from_midnight(&now().time()) / 60) / 60.0
 }
 
 pub fn stamp(day: NaiveDate) -> String {
@@ -111,6 +165,14 @@ pub fn parse_clock(text: &str) -> Result<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebase_moves_a_time_between_zones_and_filed_days() {
+        let day = |d| NaiveDate::from_ymd_opt(2026, 10, d).unwrap();
+        let (et, saigon) = (chrono_tz::America::New_York, chrono_tz::Asia::Ho_Chi_Minh);
+        assert_eq!(rebase(day(23), 8.0, et, day(24), saigon), Some(-5.0));
+        assert_eq!(rebase(day(24), 8.0, saigon, day(24), saigon), Some(8.0));
+    }
 
     #[test]
     fn formats_clock_and_durations() {

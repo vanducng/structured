@@ -81,6 +81,11 @@ fn shared_key(app: &mut App, code: KeyCode) -> Option<bool> {
     Some(false)
 }
 
+#[cfg(test)]
+pub(super) fn list_key_for_test(app: &mut App, tx: &Sender<Request>, code: KeyCode) -> bool {
+    list_key(app, tx, code)
+}
+
 fn list_key(app: &mut App, tx: &Sender<Request>, code: KeyCode) -> bool {
     if let Some(quit) = shared_key(app, code) {
         return quit;
@@ -108,6 +113,23 @@ fn list_key(app: &mut App, tx: &Sender<Request>, code: KeyCode) -> bool {
             app.mode = Mode::Confirm(Doomed::Task)
         }
         KeyCode::Char('t') => show(app, false, 0),
+        KeyCode::Char('w') => {
+            app.window = !app.window;
+            app.inbox = false;
+            app.offset = 0;
+            app.reveal();
+            app.say(
+                Tone::Quiet,
+                if app.window {
+                    "24h view, 12 hours either side of now"
+                } else {
+                    "day view, the calendar day"
+                },
+            );
+        }
+        KeyCode::Char('z') => app.next_zone(),
+        KeyCode::Char('J') => app.detail_scroll = app.detail_scroll.saturating_add(3),
+        KeyCode::Char('K') => app.detail_scroll = app.detail_scroll.saturating_sub(3),
         KeyCode::Char('i') => show(app, true, app.offset),
         KeyCode::Tab => show(app, !app.inbox, app.offset),
         KeyCode::Char('[') | KeyCode::Left => show(app, false, app.offset - 1),

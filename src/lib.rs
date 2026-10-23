@@ -70,9 +70,14 @@ pub fn execute(cli: &Cli) -> Result<()> {
             &["structured tui"],
         ));
     }
+    let config = config::load();
+    clock::set_zone(match &cli.tz {
+        Some(text) => Some(config::pick_zone(&config.zones, text)?),
+        None => config.zones.first().map(|zone| zone.tz),
+    });
     let Some(command) = &cli.command else {
         if stdout().is_terminal() {
-            return tui::run();
+            return tui::run(config);
         }
         let mut spec = Cli::command();
         spec.write_help(&mut stderr())?;
@@ -102,6 +107,12 @@ pub fn execute(cli: &Cli) -> Result<()> {
         Command::Today => {
             let mut tasks = api::today(&mut connect(cli)?)?;
             output::tasks(json, View::Day(clock::today()), &mut tasks)?;
+        }
+        Command::Now => {
+            let mut tasks = api::around_now(&mut connect(cli)?)?;
+            let clock = agenda::Clock::now();
+            tasks.retain(|task| clock.in_window(task));
+            output::tasks(json, View::Window, &mut tasks)?;
         }
         Command::Day { date } => {
             let day = clock::day_arg(date)?;
@@ -134,8 +145,7 @@ pub fn execute(cli: &Cli) -> Result<()> {
                 search: search.as_deref(),
                 limit: Some(*limit),
             };
-            let mut tasks = api::list(&mut connect(cli)?, &filter)?;
-            let truncated = tasks.len() >= usize::from(*limit);
+            let (mut tasks, truncated) = api::list(&mut connect(cli)?, &filter)?;
             output::tasks_page(json, View::Range, &mut tasks, Some(truncated))?;
         }
         Command::Add {
@@ -203,7 +213,7 @@ pub fn execute(cli: &Cli) -> Result<()> {
             scope,
         } => {
             let start_time = time.as_deref().map(clock::parse_clock).transpose()?;
-            let patch = Patch {
+            let mut patch = Patch {
                 title: text.as_deref().map(title).transpose()?,
                 note: note.clone(),
                 day: move_day.as_deref().map(clock::day_arg).transpose()?,
@@ -215,10 +225,18 @@ pub fn execute(cli: &Cli) -> Result<()> {
                     start_time.map(|_| false)
                 },
                 inbox: *inbox,
+                zoned: false,
             };
             let task_ref = target.task_ref()?;
             let scope = scope.map(Scope::from);
             let mut session = connect(cli)?;
+            if patch.day.is_some() || patch.start_time.is_some() || *all_day {
+                match api::find(&mut session, &task_ref) {
+                    Ok(current) => api::anchor(&current, &task_ref, &mut patch),
+                    Err(Error::NotFound { .. }) if !task_ref.is_occurrence() => {}
+                    Err(err) => return Err(err),
+                }
+            }
             let result = api::edit(&mut session, &task_ref, patch, scope)
                 .map_err(|err| explain(&mut session, &task_ref, err))?;
             let scope = match scope {
@@ -255,7 +273,7 @@ pub fn execute(cli: &Cli) -> Result<()> {
             output::written(json, write, result)?;
         }
         Command::Subtask(action) => subtask::run(action, json, cli.dry_run)?,
-        Command::Tui => tui::run()?,
+        Command::Tui => tui::run(config)?,
         Command::Completions { shell } => {
             let mut command = Cli::command();
             generate(*shell, &mut command, "structured", &mut stdout());

@@ -8,17 +8,20 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
-use crate::config;
+use crate::config::UiConfig;
 use crate::error::Result;
 
 use app::{App, Tone};
 
 const REFRESH: Duration = Duration::from_secs(20);
 
-pub fn run() -> Result<()> {
+pub fn run(config: UiConfig) -> Result<()> {
     let (tx, rx) = worker::spawn()?;
-    let mut app = App::new(config::load());
+    let mut app = App::new(config);
     app.reveal();
+    if let Some(warning) = app.config.warnings.first().cloned() {
+        app.say(Tone::Bad, warning);
+    }
     app.pump(&tx);
     let mut terminal = ratatui::init();
     let _guard = Restore;
@@ -87,7 +90,7 @@ pub fn run() -> Result<()> {
 
 /// The now-line and relative day labels move with the wall clock, so redraw once a minute.
 fn clock_minute() -> i64 {
-    chrono::Local::now().timestamp() / 60
+    chrono::Utc::now().timestamp() / 60
 }
 
 struct Restore;

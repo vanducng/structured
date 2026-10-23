@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 
 pub(in crate::tui) use keys::handle;
 
-use crate::agenda;
+use crate::agenda::{self, Clock, Layout};
 use crate::clock;
-use crate::config::UiConfig;
+use crate::config::{self, UiConfig};
 use crate::model::{Subtask, Task, TaskRef};
 
 use super::worker::{CacheKey, Reply, Request};
@@ -141,6 +141,7 @@ enum Undo {
 
 pub(in crate::tui) struct App {
     pub(in crate::tui) inbox: bool,
+    pub(in crate::tui) window: bool,
     pub(in crate::tui) offset: i64,
     tasks: Vec<Task>,
     pub(in crate::tui) selected: usize,
@@ -171,6 +172,7 @@ impl App {
     pub(in crate::tui) fn new(config: UiConfig) -> Self {
         Self {
             inbox: false,
+            window: config.window,
             offset: 0,
             tasks: Vec::new(),
             selected: 0,
@@ -206,6 +208,37 @@ impl App {
         self.undos.len()
     }
 
+    /// The configured zone the screen reads in, or None when the system zone is in charge.
+    pub(in crate::tui) fn zone_label(&self) -> Option<String> {
+        let tz = clock::zone()?;
+        (!self.config.zones.is_empty()).then(|| config::label(&self.config.zones, tz))
+    }
+
+    /// Days and times come back from the server already converted, so a new zone means a fresh load.
+    pub(in crate::tui) fn next_zone(&mut self) {
+        let current = clock::zone();
+        let Some(zone) = config::next_zone(&self.config.zones, current).cloned() else {
+            self.say(Tone::Quiet, "add timezones to config.toml to switch zones");
+            return;
+        };
+        if Some(zone.tz) == current {
+            self.say(Tone::Quiet, "list a second zone in config.toml to switch");
+            return;
+        }
+        if !self.undos.is_empty() {
+            self.say(Tone::Busy, "still saving, switch zones when it finishes");
+            return;
+        }
+        clock::set_zone(Some(zone.tz));
+        self.epoch += 1;
+        self.cache.clear();
+        self.prefetch = None;
+        self.checks.clear();
+        self.detaching.clear();
+        self.reveal();
+        self.say(Tone::Quiet, format!("times in {}", zone.label));
+    }
+
     /// Keeps the highlighted task when the search changes, if it still matches.
     pub(in crate::tui) fn set_query(&mut self, query: String) {
         let selected = self.selected_task().and_then(|task| task.task_ref().ok());
@@ -239,10 +272,26 @@ impl App {
     }
 
     pub(in crate::tui) fn visible(&self) -> Vec<&Task> {
+        let clock = Clock::now();
         self.tasks
             .iter()
-            .filter(|task| matches(task, &self.query))
+            .filter(|task| self.shows(task, &clock))
             .collect()
+    }
+
+    fn shows(&self, task: &Task, clock: &Clock) -> bool {
+        matches(task, &self.query) && (self.layout() != Layout::Window || clock.in_window(task))
+    }
+
+    /// Today reads as the calendar day or the rolling 24 hours, per `view` in config.toml and `w`.
+    pub(in crate::tui) fn layout(&self) -> Layout {
+        match (self.inbox, self.offset) {
+            (true, _) => Layout::Inbox,
+            (false, 0) if self.window => Layout::Window,
+            (false, offset) => Layout::Day {
+                now_line: offset == 0 && self.query.is_empty(),
+            },
+        }
     }
 
     pub(in crate::tui) fn selected_task(&self) -> Option<&Task> {
@@ -250,10 +299,11 @@ impl App {
     }
 
     fn selected_index(&self) -> Option<usize> {
+        let clock = Clock::now();
         self.tasks
             .iter()
             .enumerate()
-            .filter(|(_, task)| matches(task, &self.query))
+            .filter(|(_, task)| self.shows(task, &clock))
             .nth(self.selected)
             .map(|(index, _)| index)
     }
@@ -274,6 +324,8 @@ impl App {
     fn cache_key(&self) -> CacheKey {
         if self.inbox {
             CacheKey::Inbox
+        } else if self.offset == 0 && self.window {
+            CacheKey::Now
         } else if self.offset == 0 {
             CacheKey::Today
         } else {
@@ -408,10 +460,10 @@ impl App {
         if self.want.is_some() || self.prefetch.is_some() || !self.undos.is_empty() {
             return;
         }
-        let other = if self.inbox {
-            CacheKey::Today
-        } else {
-            CacheKey::Inbox
+        let other = match (self.inbox, self.window) {
+            (true, true) => CacheKey::Now,
+            (true, false) => CacheKey::Today,
+            (false, _) => CacheKey::Inbox,
         };
         if !self.cache.contains_key(&other) {
             self.prefetch = Some(other);
