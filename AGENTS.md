@@ -24,4 +24,4 @@ cargo test
 
 `.cursor/skills/verify-structured/SKILL.md` drives the TUI in its own tmux session, against a local fixture server (`--fixture`) or the real account, and renders PNG frames. `cargo test` does not draw the screen. Do not attach that session to a TUI that is already open.
 
-Do not commit `target/`, auth files, or tokens. `publish = false`. Releases are GitHub tags named `v*`, built by `.github/workflows/release.yml`.
+Do not commit `target/`, auth files, or tokens. `publish = false`. Releases come from release-please: merge its release PR to bump the version and tag `vX.Y.Z`; `.github/workflows/release.yml` then builds and attaches the archives. Do not edit `CHANGELOG.md` or bump `Cargo.toml` by hand.

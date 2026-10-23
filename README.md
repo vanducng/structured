@@ -8,7 +8,17 @@ This project is not affiliated with Structured, unorderly, or Leo Mehlig.
 
 ## Install
 
-From a GitHub release, unpack the archive for your machine and put `structured` on `PATH`.
+Download the archive for your machine from the [latest release](https://github.com/vanducng/structured/releases/latest), check it against `SHA256SUMS`, and put `structured` on `PATH`. Archives exist for `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`. Upgrading is the same steps.
+
+```bash
+tag=$(gh release view --repo vanducng/structured --json tagName -q .tagName)
+target=aarch64-apple-darwin
+gh release download "$tag" --repo vanducng/structured -p "structured-$tag-$target.tar.gz" -p SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+tar -xzf "structured-$tag-$target.tar.gz"
+install -m 755 "structured-$tag-$target/structured" ~/.local/bin/structured
+structured --version
+```
 
 Or build from the tagged source:
 
@@ -147,6 +157,8 @@ cargo test
 ```
 
 Rust 1.88 or newer. The lockfile is committed.
+
+Releases are automatic. Conventional commits on `main` feed release-please, which keeps a release PR open with the next version and its `CHANGELOG.md` entry: `fix` bumps the patch, `feat` and breaking changes bump the minor while the version is below 1.0. Merging that PR updates `Cargo.toml`, tags `vX.Y.Z`, and creates the GitHub release; the same workflow run builds the archives and `SHA256SUMS` and attaches them. A manual run of the `release` workflow with a tag rebuilds and re-uploads that release's assets.
 
 `src/lib.rs` dispatches the CLI and `src/subtask.rs` runs the checklist commands. `src/agenda.rs` orders a day and finds gaps and overlaps for both the TUI and `--text`. `src/tui/` is the terminal UI: `app` holds state, keys, and the cache, `worker` talks to Structured off the UI thread, and `view` draws with ratatui. Prompts use `tui-input`.
 
