@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/vanducng/structured/compare/v0.3.0...v0.4.0) (2026-10-23)
+
+
+### Features
+
+* added install.sh and structured update ([#7](https://github.com/vanducng/structured/issues/7)) ([1a37645](https://github.com/vanducng/structured/commit/1a376450d51a6dc1668a1ef5fbc725f11ebb11e5))
+
 ## [0.3.0](https://github.com/vanducng/structured/compare/v0.2.0...v0.3.0) (2026-10-23)
 
 
