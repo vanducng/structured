@@ -1,6 +1,11 @@
 ---
 name: structured
-description: Operate the Structured day planner through the `structured` CLI. Use when listing, completing, creating, editing, or deleting Structured tasks, opening the Structured TUI, or recovering from structured CLI errors. Reads are safe. Writes need explicit user authorization.
+description: "Operate the Structured day planner through the structured CLI. Use when listing, completing, creating, editing, or deleting Structured tasks, opening the Structured TUI, or recovering from structured CLI errors. Reads are safe. Writes need explicit user authorization."
+license: MIT
+argument-hint: "<Structured task read or authorized change>"
+metadata:
+  author: vanducng
+  version: "0.1.0"
 ---
 
 # structured
