@@ -6,8 +6,10 @@ pub enum Error {
     Auth,
     #[error("{0}")]
     Api(String),
-    #[error("{0}")]
-    Usage(String),
+    #[error("{message}")]
+    Usage { message: String, steps: Vec<String> },
+    #[error("{message}")]
+    NotFound { message: String, steps: Vec<String> },
     #[error("a command is required")]
     Help,
     #[error("network: {0}")]
@@ -19,11 +21,33 @@ pub enum Error {
 }
 
 impl Error {
+    pub fn usage(message: impl Into<String>) -> Self {
+        Self::Usage {
+            message: message.into(),
+            steps: Vec::new(),
+        }
+    }
+
+    pub fn usage_with(message: impl Into<String>, steps: &[&str]) -> Self {
+        Self::Usage {
+            message: message.into(),
+            steps: steps.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+
+    pub fn not_found(message: impl Into<String>, steps: Vec<String>) -> Self {
+        Self::NotFound {
+            message: message.into(),
+            steps,
+        }
+    }
+
     pub fn code(&self) -> &'static str {
         match self {
             Self::Auth => "AUTH",
             Self::Api(_) => "API",
-            Self::Usage(_) | Self::Help => "USAGE",
+            Self::Usage { .. } | Self::Help => "USAGE",
+            Self::NotFound { .. } => "NOT_FOUND",
             Self::Network(_) => "NETWORK",
             Self::Io(_) => "IO",
             Self::Json(_) => "DATA",
@@ -34,17 +58,27 @@ impl Error {
         matches!(self, Self::Network(_))
     }
 
-    pub fn next_steps(&self) -> Vec<&'static str> {
-        match self {
-            Self::Auth => vec!["structured login"],
-            Self::Network(_) => vec!["retry the command"],
-            _ => vec!["structured --help"],
-        }
+    pub fn next_steps(&self) -> Vec<String> {
+        let steps: &[&str] = match self {
+            Self::Usage { steps, .. } | Self::NotFound { steps, .. } if !steps.is_empty() => {
+                return steps.clone();
+            }
+            Self::Auth => {
+                &["ask the person to run `structured login` in their own terminal, then retry"]
+            }
+            Self::Network(_) => &["retry the command once"],
+            Self::NotFound { .. } => &[
+                "structured today --json",
+                "structured list --from YYYY-MM-DD --json",
+            ],
+            _ => &["structured <command> --help"],
+        };
+        steps.iter().map(|s| (*s).to_owned()).collect()
     }
 
     pub fn exit_code(&self) -> ExitCode {
         match self {
-            Self::Usage(_) | Self::Help => ExitCode::from(2),
+            Self::Usage { .. } | Self::Help => ExitCode::from(2),
             _ => ExitCode::from(1),
         }
     }

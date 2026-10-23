@@ -4,19 +4,20 @@ Find narrows the visible list by title or note and moves the highlight between m
 
 ## Sub-features
 
-- `find-slash` opens find with `/` and shows the query in the hint.
+- `find-slash` opens find with `/`. The footer shows a `FIND` chip and `/` with the query.
 - `find-type` appends letters, including `f`, and narrows the visible count.
 - `find-arrows` move the highlight while the prompt is open.
 - `find-empty` shows a zero count for a query that matches nothing.
 - `find-escape` clears the query and restores the count.
-- `find-f` opens find with `f`. A second `f` on an empty query closes it. A second `f` on a typed query jumps to the next match.
-- `find-enter` closes the prompt and keeps the query on the hint.
+- `find-f` opens the same find with `f`. Every letter types, `f` included.
+- `find-enter` closes the prompt and keeps the query in the list title. Matches are underlined in titles, subtasks, and notes.
+- `find-next` steps through kept matches with `n` and `N` (and `f`).
 
 ## How to get to it (user POV)
 
 - Press `/` on the list.
 - Press `f` on the list when no query is active.
-- Press `f` again while a query is already applied to jump to the next match.
+- Press `n` or `N` while a query is kept to move between matches. `esc` clears it.
 
 ## Driving it with verify.sh
 
@@ -25,17 +26,19 @@ Preconditions:
 - `verify.sh doctor` reports `status=ready` on Today.
 - Note the visible count in the hint before typing.
 
-- **Open.** Press `/`. Run `verify.sh keys "$RUN_ID" -- /` and `verify.sh capture "$RUN_ID" find-open`. The hint contains `/_`.
-- **Miss.** Type `zzqq`. Run `verify.sh keys "$RUN_ID" -- z z q q` and capture `find-miss`. The hint contains `/zzqq_` and the visible count is `0`.
-- **Arrows.** Press Down, then Up. Run `verify.sh keys "$RUN_ID" -- Down Up`. The hint still contains `/zzqq_` and the count stays `0`.
-- **Clear.** Press Escape. Run `verify.sh keys "$RUN_ID" -- Escape` and capture `find-cleared`. The hint has no `/zzqq` and the count matches the count from before find.
-- **`f` toggle.** Press `f` twice. Run `verify.sh keys "$RUN_ID" -- f f` and capture `find-f`. The first `f` would show `/_`; after the second `f` the hint has no `/_`.
-- **Keep.** Open with `/`, type `zzqq`, press Enter. Run `verify.sh keys "$RUN_ID" -- / z z q q Enter` and capture `find-kept`. The hint contains `/zzqq` and does not contain `/zzqq_`. Press Escape afterward so the next recipe starts unfiltered.
+- **Open.** `keys -- /`, `capture find-open`. The footer has `FIND` and `↑↓ move`.
+- **Miss.** `keys -- z z q q`, `capture find-miss`. The footer shows `/zzqq`, the list title reads `0 tasks · /zzqq`, and the list says `No tasks match “zzqq”`.
+- **Arrows.** `keys -- Down Up`. The footer still shows `/zzqq` and the count stays `0`.
+- **Clear.** `keys -- Escape`, `capture find-cleared`. The `FIND` chip is gone and the count matches the count from before find.
+- **`f` types.** `keys -- f`, `type "fields"`, `capture find-f`. The footer shows `/fields` and the `FIND` chip stays. Escape.
+- **Keep.** `keys -- / z z q q Enter`, `capture find-kept`. The `FIND` chip is gone and the list title still has `/zzqq`. In the list, Escape clears it so the next recipe starts unfiltered.
+- **Subtask match.** In a fixture run, `keys -- / b a c k f i l l Enter`. The list shows `1 task` and it is the billing export, found through its subtask.
 
 ## Gotchas
 
 - `q` inside find is a letter. It does not quit.
 - `j` and `k` inside find are letters. Arrows move. Left and Right also move while find is open. Outside find, Left and Right change the day.
-- `f` inside a find opened with `/` is a letter. `f` inside a find opened with `f` is the repeat key: close when the query is empty, next match when it is not.
-- Typing or Backspace resets the highlight to the first match.
-- Escape clears the query. Enter keeps it.
+- Inside find every printable key is a letter. Outside it, with a kept query, `n` `N` and `f` move between matches.
+- Typing, Backspace, and Escape keep the highlighted task when it still matches; otherwise the highlight goes to the first match.
+- Escape clears the query. Enter keeps it. Escape on the list clears a kept query.
+- `ctrl-u` and `ctrl-w` clear the query. Other control keys never type.

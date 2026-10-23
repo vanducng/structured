@@ -123,9 +123,12 @@ fn refresh(http: &Client, auth: &mut Auth) -> Result<()> {
             ("client_id", auth.client_id.as_str()),
             ("resource", MCP_URL),
         ])
-        .send()?
-        .error_for_status()?
-        .json::<Value>()?;
+        .send()?;
+    // A rejected refresh token is a sign-in problem, not a network blip worth retrying.
+    if matches!(response.status().as_u16(), 400 | 401 | 403) {
+        return Err(Error::Auth);
+    }
+    let response = response.error_for_status()?.json::<Value>()?;
     apply_token(auth, &response)?;
     save(auth)
 }
@@ -161,8 +164,8 @@ pub fn login(http: &Client) -> Result<Auth> {
     .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
     .join("&");
     let url = format!("{}?{query}", meta.authorization_endpoint);
-    println!("Opening Structured sign-in in the browser.");
-    println!("{url}");
+    eprintln!("Opening Structured sign-in in the browser.");
+    eprintln!("{url}");
     let _ = std::process::Command::new(open_cmd()).arg(&url).status();
     let callback = wait_callback(&state)?;
     let response = http
@@ -180,7 +183,6 @@ pub fn login(http: &Client) -> Result<Auth> {
         .json::<Value>()?;
     apply_token(&mut auth, &response)?;
     save(&auth)?;
-    println!("Signed in.");
     Ok(auth)
 }
 
@@ -273,7 +275,7 @@ fn wait_callback(expected_state: &str) -> Result<String> {
     let listener = TcpListener::bind("127.0.0.1:8734")?;
     listener.set_nonblocking(true)?;
     let deadline = SystemTime::now() + Duration::from_secs(180);
-    println!("Waiting up to 3 minutes...");
+    eprintln!("Waiting up to 3 minutes...");
     loop {
         if SystemTime::now() > deadline {
             return Err(Error::Auth);
@@ -285,11 +287,13 @@ fn wait_callback(expected_state: &str) -> Result<String> {
                 let n = stream.read(&mut buf).unwrap_or(0);
                 let req = String::from_utf8_lossy(&buf[..n]);
                 let location = req.split_whitespace().nth(1).unwrap_or("");
-                let body = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<p>Signed in. Return to the terminal.</p>";
-                let _ = stream.write_all(body);
                 if !location.starts_with("/callback") {
+                    let _ =
+                        stream.write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
                     continue;
                 }
+                let body = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<p>Signed in. Return to the terminal.</p>";
+                let _ = stream.write_all(body);
                 let query = location.split_once('?').map(|(_, q)| q).unwrap_or("");
                 let mut code = None;
                 let mut state = None;

@@ -1,6 +1,6 @@
 ---
 name: verify-structured
-description: "Drive the structured TUI in an isolated tmux session and capture the screen. Use after a TUI change, to prove find, navigation, help, or schedule prompts, or when cargo test is green but the frame is unverified. Reads are safe. Writes stay off unless the user authorizes them."
+description: "Drive the structured TUI in an isolated tmux session, against a local fixture server or the real account, and capture text, ANSI, and PNG frames. Use after a TUI change, to prove find, navigation, help, schedule prompts, or subtasks, or when cargo test is green but the frame is unverified. Fixture writes are safe. Live writes stay off unless the user authorizes them."
 ---
 
 # Verify structured
@@ -15,12 +15,15 @@ From the repo root:
 
 ```bash
 RUN_ID=verify-$(date +%Y%m%d%H%M%S)
-.cursor/skills/verify-structured/scripts/verify.sh launch "$RUN_ID"
+.cursor/skills/verify-structured/scripts/verify.sh launch "$RUN_ID" --fixture
 ```
 
-Launch builds `target/debug/structured`, copies the existing `auth.json` into an empty `XDG_CONFIG_HOME` for this run, and starts `structured tui` in a new tmux session `sverify-$RUN_ID` at 120x32. It waits until the hint contains `f find` and `m min` and a status line ends in `N tasks`.
+Launch builds `target/debug/structured` and starts `structured tui` in a new tmux session `sverify-$RUN_ID` at 120x32 (`--size 80x24` for a small terminal). It waits until the footer shows `? help` and a list title shows `N tasks`.
 
-An empty config with no auth file cannot reach that screen. `Session::connect` returns before the first draw, and the process exits. Sign in once with `structured login` in a terminal. Launch copies that file. It never prints it.
+Two modes:
+
+- `--fixture` starts `scripts/fixture-server.py`, a local stand-in for Structured Cloud with generic tasks dated around today, and points the binary at it through `STRUCTURED_MCP_URL`. Writes are safe here and every tool call lands in `evidence/calls.jsonl`. Use this for screenshots, critic reviews, and every write proof.
+- Without `--fixture` the run uses the person's own config in place and reads their real account. Use it only to prove that real data renders. It never copies `auth.json`: a token refresh inside a copy would rotate the refresh token and could sign the person out. The person signs in once with `structured login`. Launch never prints the auth file.
 
 The session is not the user's open TUI. Refuse to drive any tmux session this run did not create.
 
@@ -32,40 +35,41 @@ Run this first whenever the frame looks wrong:
 .cursor/skills/verify-structured/scripts/verify.sh doctor "$RUN_ID"
 ```
 
-Doctor passes only when all of these are true:
-
-- tmux session `sverify-$RUN_ID` exists
-- the pane command is `structured`
-- the pane's executable is this run's `target/debug/structured`
-- the hint contains `f find` and `m min`
-- a status line matches ` N tasks`
-
-Doctor prints those facts and no pane body. A missing hint, a different binary, or a dead pane is a failed doctor, not a reason to reuse another `structured` process.
+Doctor passes only when the session `sverify-$RUN_ID` exists, the pane command is this run's `target/debug/structured`, the footer shows `? help`, and a list title shows `N tasks` with no `Loading…`. It prints those facts and the mode, never the pane body.
 
 ## Drive
 
-Send keys only through the helper. One argument is one key. Words `Escape`, `Enter`, `Up`, `Down`, `Left`, `Right`, `BSpace`, `Tab`, `Space`, `C-d`, `C-u`, `C-g`, `C-y`, and `C-e` are special. Every other argument is one literal character, including `/`, `?`, and `q`.
+Send keys only through the helper. One argument is one key. `Escape`, `Enter`, `Up`, `Down`, `Left`, `Right`, `BSpace`, `Tab`, `Space`, `Home`, `End`, `C-c`, `C-d`, `C-u`, `C-g`, `C-y`, `C-e`, `C-w`, `C-a`, and `C-k` are special. Every other argument is one literal character, including `/`, `?`, and `q`. `type` sends a whole string into an open prompt.
 
 ```bash
 .cursor/skills/verify-structured/scripts/verify.sh keys "$RUN_ID" -- / z z q q
+.cursor/skills/verify-structured/scripts/verify.sh type "$RUN_ID" "Dry run"
 .cursor/skills/verify-structured/scripts/verify.sh capture "$RUN_ID" find-open
+.cursor/skills/verify-structured/scripts/verify.sh shot "$RUN_ID" find-open
+.cursor/skills/verify-structured/scripts/verify.sh calls "$RUN_ID"
 ```
+
+`capture` writes `<name>.txt` and `<name>.ansi`. `shot` also renders the ANSI frame through `scripts/render.py` and headless Chrome into `<name>.png`, which is what a visual reviewer reads. `calls` prints the fixture's tool-call log.
 
 Stable handles are the text the UI draws, not coordinates:
 
-- Hint: `t today`, `i inbox`, `f find`, `D date`, `T time`, `m min`, the visible count, and `/query_` while find is open
-- Status: a line ending in `N tasks`, or `loading`, or `saving`
-- Detail prompts: `add:`, `title:`, `date:`, `time:`, `duration:`, each ending in `_`
-- Help detail: `f again next match` and `m duration`
-- Confirm detail: `Delete this task?`
+- Header: the long date and `Today`, or `Inbox` and `N open`, plus the week strip and `Inbox N`.
+- List title: `Today · N tasks`, `Inbox · N tasks`, or a date, with `/query` while a search is applied. Right side: `N done` and `planned`.
+- Footer in the list: `⏎ subtasks`, `x done`, `f find`, `m min`, `? help`. In the checklist: a `SUBTASKS` chip and `x tick`, `h back`.
+- Footer chips: `FIND` with `/query`, a prompt name (`NEW TASK`, `TITLE`, `DATE`, `TIME`, `DURATION`, `NEW SUBTASK`, `SUBTASK`) plus `every repeat` or `this day only` on a recurring task, `DELETE`, `HELP`.
+- Status: `● saving…`, `✓ saved`, `✓ subtasks saved`, `✗ <error>`, `· task kept`, and `● finishing N saves, q again quits now` after `q` with saves pending.
+- Help modal: `Keys`, `next, previous`, `minutes`, `Subtasks`.
+- Confirm modal: `Delete task` or `Delete subtask`, and `y delete`.
+
+The cursor of a prompt is a real terminal cursor, so a text capture does not show it. Assert on the chip and the draft text.
 
 Read [features/README.md](features/README.md) and drive the feature file that matches the change. A proof of one entry point does not cover the others listed there.
 
-Keys that write to Structured Cloud, as soon as they are pressed or as soon as Enter confirms a prompt: `x`, Space, `a` then Enter, `e` then Enter, `D` then Enter, `T` then Enter, `m` then Enter, `,`, `.`, and `d` then `y`. Do not send them unless the user has authorized that write and `STRUCTURED_VERIFY_WRITES=1` is set. Opening `D`, `T`, or `m` and pressing Escape does not write.
+Keys that write, as soon as they are pressed or as soon as Enter or `y` confirms: `x`, Space, `a`/`e`/`D`/`T`/`m` then Enter, `,`, `.`, `d` then `y`, and in the checklist `x`, Space, `a`/`e` then Enter, `d` then `y`. In a live run do not send them unless the user authorized that write and `STRUCTURED_VERIFY_WRITES=1` is set. In a `--fixture` run they are safe. Opening a prompt and pressing Escape never writes.
 
 ## Evidence
 
-Evidence stays under the `evidence_dir` printed by launch, normally `$TMPDIR/structured-verify/$RUN_ID/evidence/`. Capture writes `<name>.txt` there. The pane transcript is the proof. It includes task titles, so do not commit it, paste it into chat, or copy it into the repo.
+Evidence stays under the `evidence_dir` printed by launch, normally `$TMPDIR/structured-verify/$RUN_ID/evidence/`. A live run's captures include the person's task titles, so do not commit them, paste them into chat, or hand them to another agent. Fixture captures hold only generic titles and are fine to share with reviewers.
 
 For each step record the feature id, the keys, and the capture. The proof is the action plus the next frame, not the last frame alone. Assert on stable strings (`/zzqq_`, `duration:`, `N tasks`). Do not treat a title match as the oracle.
 
@@ -77,17 +81,20 @@ For each step record the feature id, the keys, and the capture. The proof is the
 .cursor/skills/verify-structured/scripts/verify.sh cleanup "$RUN_ID"
 ```
 
-Cleanup kills tmux session `sverify-$RUN_ID` and no other session. It does not delete the evidence directory. After cleanup, `tmux has-session -t sverify-$RUN_ID` must fail and the capture files must still be readable.
+Cleanup kills tmux session `sverify-$RUN_ID`, stops this run's fixture server, and touches nothing else. It does not delete the evidence directory. After cleanup, `tmux has-session -t sverify-$RUN_ID` must fail and the capture files must still be readable.
 
 ## Helpers
 
 `.cursor/skills/verify-structured/scripts/verify.sh` is the harness.
 
 ```bash
-.cursor/skills/verify-structured/scripts/verify.sh launch <run-id>
+.cursor/skills/verify-structured/scripts/verify.sh launch <run-id> [--fixture] [--size WxH]
 .cursor/skills/verify-structured/scripts/verify.sh doctor <run-id>
 .cursor/skills/verify-structured/scripts/verify.sh keys <run-id> -- <key>...
+.cursor/skills/verify-structured/scripts/verify.sh type <run-id> <text>
 .cursor/skills/verify-structured/scripts/verify.sh capture <run-id> <name>
+.cursor/skills/verify-structured/scripts/verify.sh shot <run-id> <name>
+.cursor/skills/verify-structured/scripts/verify.sh calls <run-id>
 .cursor/skills/verify-structured/scripts/verify.sh cleanup <run-id>
 ```
 

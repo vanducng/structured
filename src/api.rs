@@ -1,9 +1,11 @@
 use serde_json::{Value, json};
 
+use crate::clock;
 use crate::error::{Error, Result};
 use crate::mcp::Session;
-use crate::model::{self, DEFAULT_SYMBOL, Task, TaskRef};
+use crate::model::{self, DEFAULT_SYMBOL, Subtask, Task, TaskRef};
 
+#[derive(Default)]
 pub struct NewTask {
     pub title: String,
     pub note: Option<String>,
@@ -12,8 +14,10 @@ pub struct NewTask {
     pub duration: Option<i64>,
     pub all_day: bool,
     pub symbol: Option<String>,
+    pub subtasks: Vec<String>,
 }
 
+#[derive(Default)]
 pub struct Patch {
     pub title: Option<String>,
     pub note: Option<String>,
@@ -22,11 +26,19 @@ pub struct Patch {
     pub duration: Option<i64>,
     pub all_day: Option<bool>,
     pub inbox: bool,
-    pub new_day: Option<String>,
+}
+
+#[derive(Default)]
+pub struct Filter<'a> {
+    pub from: Option<&'a str>,
+    pub to: Option<&'a str>,
+    pub completed: Option<bool>,
+    pub search: Option<&'a str>,
+    pub limit: Option<u8>,
 }
 
 pub fn account(session: &mut Session) -> Result<Value> {
-    session.call("get_account", json!({}))
+    payload(session.call("get_account", json!({}))?)
 }
 
 pub fn today(session: &mut Session) -> Result<Vec<Task>> {
@@ -44,15 +56,88 @@ pub fn inbox(session: &mut Session) -> Result<Vec<Task>> {
     session.tasks("get_inbox", json!({}))
 }
 
-pub fn list(session: &mut Session, from: Option<&str>, to: Option<&str>) -> Result<Vec<Task>> {
-    let mut args = json!({"timezone": model::timezone(), "limit": 200});
-    if let Some(from) = from {
+pub fn list(session: &mut Session, filter: &Filter) -> Result<Vec<Task>> {
+    let mut args = json!({"timezone": model::timezone(), "limit": filter.limit.unwrap_or(200)});
+    if let Some(from) = filter.from {
         args["day_from"] = json!(from);
     }
-    if let Some(to) = to {
+    if let Some(to) = filter.to {
         args["day_to"] = json!(to);
     }
+    if let Some(completed) = filter.completed {
+        args["is_completed"] = json!(completed);
+    }
+    if let Some(search) = filter.search {
+        args["title_contains"] = json!(search);
+    }
     session.tasks("list_tasks", args)
+}
+
+/// The server has no get-by-id, so look where a task can live: its day, today, the inbox, then nearby days.
+pub fn find(session: &mut Session, task: &TaskRef) -> Result<Task> {
+    if let TaskRef::Occurrence { day: on, .. } = task {
+        return pick(day(session, on)?, task).unwrap_or_else(|| Err(not_found(task)));
+    }
+    if let Some(found) = pick(today(session)?, task) {
+        return found;
+    }
+    if let Some(found) = pick(inbox(session)?, task) {
+        return found;
+    }
+    if let Some(found) = pick(list(session, &Filter::default())?, task) {
+        return found;
+    }
+    let today = clock::today();
+    let from = clock::stamp(today - chrono::Duration::days(60));
+    let to = clock::stamp(today - chrono::Duration::days(1));
+    let past = Filter {
+        from: Some(&from),
+        to: Some(&to),
+        ..Filter::default()
+    };
+    pick(list(session, &past)?, task).unwrap_or_else(|| Err(not_found(task)))
+}
+
+/// A recurring day's plain id is a common slip; point at the ref that works instead.
+fn pick(tasks: Vec<Task>, task: &TaskRef) -> Option<Result<Task>> {
+    tasks.into_iter().find_map(|candidate| {
+        let candidate_ref = candidate.task_ref().ok()?;
+        if &candidate_ref == task {
+            return Some(Ok(candidate));
+        }
+        match task {
+            TaskRef::Id(id)
+                if candidate.id.as_deref() == Some(id) && candidate_ref.is_occurrence() =>
+            {
+                Some(Err(Error::not_found(
+                    format!("{id} is one day of a recurring task; its ref is {candidate_ref}"),
+                    vec![format!("use {candidate_ref} as REF")],
+                )))
+            }
+            _ => None,
+        }
+    })
+}
+
+fn not_found(task: &TaskRef) -> Error {
+    Error::not_found(
+        format!("task {task} not found in the inbox, upcoming days, or the last 60 days"),
+        refresh_steps(),
+    )
+}
+
+fn refresh_steps() -> Vec<String> {
+    vec![
+        "structured today --json".into(),
+        "structured list --from YYYY-MM-DD --to YYYY-MM-DD --json".into(),
+    ]
+}
+
+/// How far an edit on one day of a recurring task reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    Day,
+    Series,
 }
 
 pub fn add(session: &mut Session, draft: NewTask) -> Result<Value> {
@@ -76,32 +161,54 @@ pub fn add(session: &mut Session, draft: NewTask) -> Result<Value> {
     if let Some(duration) = draft.duration {
         args["duration"] = json!(duration);
     }
-    ensure_ok(session.call("create_task", args)?)
+    if !draft.subtasks.is_empty() {
+        let subtasks: Vec<Value> = draft
+            .subtasks
+            .iter()
+            .map(|title| json!({"title": title}))
+            .collect();
+        args["subtasks"] = json!(subtasks);
+    }
+    payload(session.call("create_task", args)?)
 }
 
 pub fn set_completed(session: &mut Session, task: &TaskRef, completed: bool) -> Result<Value> {
     let value = if completed {
-        session.call("complete_task", ident(task)?)?
+        session.call("complete_task", ident(task))?
     } else {
-        let mut args = ident(task)?;
+        let mut args = ident(task);
         args["is_completed"] = json!(false);
         session.call("update_task", args)?
     };
-    ensure_ok(value)
+    payload(value)
 }
 
-pub fn edit(session: &mut Session, task: &TaskRef, patch: Patch) -> Result<Value> {
-    ensure_ok(session.call("update_task", edit_args(task, patch)?)?)
+pub fn edit(
+    session: &mut Session,
+    task: &TaskRef,
+    patch: Patch,
+    scope: Option<Scope>,
+) -> Result<Value> {
+    payload(session.call("update_task", edit_args(task, patch, scope)?)?)
 }
 
-fn edit_args(task: &TaskRef, patch: Patch) -> Result<Value> {
-    let mut args = ident(task)?;
-    let recurring = args.get("recurring_id").is_some();
+/// A recurring day must say whether the edit detaches that day (`only_this`) or rewrites the series (`all`).
+fn edit_args(task: &TaskRef, patch: Patch, scope: Option<Scope>) -> Result<Value> {
+    let mut args = ident(task);
+    let before = args.as_object().map_or(0, serde_json::Map::len);
     if let Some(title) = patch.title {
         args["title"] = json!(title);
     }
     if let Some(note) = patch.note {
         args["note"] = json!(note);
+    }
+    if let Some(day) = patch.day {
+        let key = if task.is_occurrence() {
+            "new_day"
+        } else {
+            "day"
+        };
+        args[key] = json!(day);
     }
     if let Some(start) = patch.start_time {
         args["start_time"] = json!(start);
@@ -112,112 +219,186 @@ fn edit_args(task: &TaskRef, patch: Patch) -> Result<Value> {
     if let Some(all_day) = patch.all_day {
         args["is_all_day"] = json!(all_day);
     }
+    let patch_inbox = patch.inbox;
     if patch.inbox {
         args["is_in_inbox"] = json!(true);
     }
-    if recurring {
-        if let Some(new_day) = patch.new_day.or(patch.day) {
-            args["new_day"] = json!(new_day);
-        }
-    } else if let Some(day) = patch.day {
-        args["day"] = json!(day);
+    if args.as_object().map_or(0, serde_json::Map::len) == before {
+        return Err(Error::usage("edit needs at least one change"));
     }
-    let fields = args.as_object().map(serde_json::Map::len).unwrap_or(0);
-    if fields == 1 || (recurring && fields == 2) {
-        return Err(Error::Usage("edit needs at least one change".into()));
-    }
-    if recurring {
-        let action = if args.get("new_day").is_some() {
-            "only_this"
-        } else {
-            "all"
+    if task.is_occurrence() {
+        let action = match scope {
+            Some(Scope::Day) => "only_this",
+            Some(Scope::Series) if args.get("new_day").is_some() || patch_inbox => {
+                return Err(Error::usage_with(
+                    "a series cannot move to one day or the inbox; move this day with --scope day",
+                    &["structured edit REF --move-day DAY --scope day"],
+                ));
+            }
+            Some(Scope::Series) => "all",
+            None => {
+                return Err(Error::usage_with(
+                    format!("{task} is one day of a recurring task; say how far the edit reaches"),
+                    &[
+                        "add --scope day to change only this day",
+                        "add --scope series to change every repeat",
+                    ],
+                ));
+            }
         };
         args["update_action"] = json!(action);
     }
     Ok(args)
 }
 
-pub fn delete(session: &mut Session, task: &TaskRef) -> Result<Value> {
-    let mut args = ident(task)?;
-    if args.get("recurring_id").is_some() {
-        args["delete_scope"] = json!("this");
+/// The server replaces the whole list. Ticking on a recurring occurrence is free and per day.
+/// Other changes stay on that day (`only_this`) so one day's ticks never leak into the series.
+pub fn set_subtasks(
+    session: &mut Session,
+    task: &TaskRef,
+    subtasks: &[Subtask],
+    structural: bool,
+) -> Result<Value> {
+    let mut args = ident(task);
+    args["subtasks"] = Value::Array(subtasks.iter().map(subtask_json).collect());
+    if structural && task.is_occurrence() {
+        args["update_action"] = json!("only_this");
     }
-    ensure_ok(session.call("delete_task", args)?)
+    payload(session.call("update_task", args)?)
 }
 
-fn ensure_ok(value: Value) -> Result<Value> {
+fn subtask_json(subtask: &Subtask) -> Value {
+    let mut value = json!({"title": subtask.title});
+    match &subtask.id {
+        Some(id) => {
+            value["id"] = json!(id);
+            value["completed_at"] = json!(subtask.completed_at);
+        }
+        None => {
+            if let Some(at) = &subtask.completed_at {
+                value["completed_at"] = json!(at);
+            }
+        }
+    }
+    value
+}
+
+pub fn delete(session: &mut Session, task: &TaskRef) -> Result<Value> {
+    let mut args = ident(task);
+    if task.is_occurrence() {
+        args["delete_scope"] = json!("this");
+    }
+    payload(session.call("delete_task", args)?)
+}
+
+/// Unwraps the MCP envelope so callers see the tool's own JSON, not `content[].text` copies.
+fn payload(value: Value) -> Result<Value> {
+    let text = model::tool_text(&value);
     if value
         .get("isError")
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        let message = model::tool_text(&value);
-        return Err(Error::Api(if message.is_empty() {
+        if text.to_ascii_lowercase().contains("not found") {
+            return Err(Error::not_found(text, refresh_steps()));
+        }
+        return Err(Error::Api(if text.is_empty() {
             "request failed".into()
         } else {
-            message
+            text
         }));
     }
-    Ok(value)
+    if let Some(structured) = value.get("structuredContent").filter(|v| !v.is_null()) {
+        return Ok(structured.clone());
+    }
+    if text.is_empty() {
+        return Ok(value);
+    }
+    Ok(model::extract_json(&text).unwrap_or(Value::String(text)))
 }
 
-fn ident(task: &TaskRef) -> Result<Value> {
-    if let Some(id) = &task.id {
-        return Ok(json!({"id": id}));
+pub fn task_in(result: &Value) -> Option<Task> {
+    let task = result
+        .get("task")
+        .filter(|task| task.is_object())
+        .or_else(|| result.get("title").map(|_| result))?;
+    let mut task: Task = serde_json::from_value(task.clone()).ok()?;
+    task.is_completed = task.done();
+    Some(task)
+}
+
+fn ident(task: &TaskRef) -> Value {
+    match task {
+        TaskRef::Id(id) => json!({"id": id}),
+        TaskRef::Occurrence { recurring_id, day } => {
+            json!({"recurring_id": recurring_id, "day": day})
+        }
     }
-    let recurring_id = task
-        .recurring_id
-        .as_deref()
-        .ok_or_else(|| Error::Usage("task id is required".into()))?;
-    let day = task
-        .day
-        .as_deref()
-        .ok_or_else(|| Error::Usage("recurring task needs --day YYYY-MM-DD".into()))?;
-    Ok(json!({"recurring_id": recurring_id, "day": day}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn blank() -> Patch {
-        Patch {
-            title: None,
-            note: None,
-            day: None,
-            start_time: None,
-            duration: None,
-            all_day: None,
-            inbox: false,
-            new_day: None,
-        }
-    }
-
-    fn recurring() -> TaskRef {
-        TaskRef {
-            id: None,
-            recurring_id: Some("rid".into()),
-            day: Some("2026-10-24".into()),
-        }
+    #[test]
+    fn unwraps_structured_content_and_errors() {
+        let ok = json!({"content":[{"type":"text","text":"done"}],"structuredContent":{"task":{"id":"a","title":"x"}}});
+        let value = payload(ok).unwrap();
+        assert_eq!(task_in(&value).unwrap().title, "x");
+        let text_only = json!({"content":[{"type":"text","text":"Created: {\"id\":\"b\"}"}]});
+        assert_eq!(payload(text_only).unwrap()["id"], "b");
+        let missing = json!({"isError":true,"content":[{"type":"text","text":"Task not found"}]});
+        assert!(matches!(payload(missing), Err(Error::NotFound { .. })));
+        let failed = json!({"isError":true,"content":[{"type":"text","text":"Unknown symbol"}]});
+        assert!(matches!(payload(failed), Err(Error::Api(message)) if message == "Unknown symbol"));
     }
 
     #[test]
-    fn series_edit_does_not_detach() {
-        let mut patch = blank();
-        patch.title = Some("Standup".into());
-        let args = edit_args(&recurring(), patch).unwrap();
-        assert_eq!(args["update_action"].as_str(), Some("all"));
-        assert_eq!(args["day"].as_str(), Some("2026-10-24"));
-        assert!(args.get("new_day").is_none());
+    fn recurring_edits_need_an_explicit_scope() {
+        let occurrence = TaskRef::Occurrence {
+            recurring_id: "rid".into(),
+            day: "2026-10-24".into(),
+        };
+        let title = || Patch {
+            title: Some("Standup".into()),
+            ..Patch::default()
+        };
+        let moved = || Patch {
+            day: Some("2026-10-25".into()),
+            ..Patch::default()
+        };
+        assert!(matches!(
+            edit_args(&occurrence, title(), None),
+            Err(Error::Usage { .. })
+        ));
+        let args = edit_args(&occurrence, title(), Some(Scope::Series)).unwrap();
+        assert_eq!(args["update_action"], "all");
+        assert_eq!(args["day"], "2026-10-24");
+        let args = edit_args(&occurrence, title(), Some(Scope::Day)).unwrap();
+        assert_eq!(args["update_action"], "only_this");
+        assert!(matches!(
+            edit_args(&occurrence, moved(), Some(Scope::Series)),
+            Err(Error::Usage { .. })
+        ));
+        let args = edit_args(&occurrence, moved(), Some(Scope::Day)).unwrap();
+        assert_eq!(args["update_action"], "only_this");
+        assert_eq!(args["new_day"], "2026-10-25");
+        let plain = edit_args(&TaskRef::Id("a".into()), moved(), None).unwrap();
+        assert_eq!(plain, json!({"id": "a", "day": "2026-10-25"}));
+        assert!(matches!(
+            edit_args(&occurrence, Patch::default(), Some(Scope::Day)),
+            Err(Error::Usage { .. })
+        ));
     }
 
     #[test]
-    fn one_day_move_stays_on_that_occurrence() {
-        let mut patch = blank();
-        patch.day = Some("2026-10-25".into());
-        let args = edit_args(&recurring(), patch).unwrap();
-        assert_eq!(args["update_action"].as_str(), Some("only_this"));
-        assert_eq!(args["day"].as_str(), Some("2026-10-24"));
-        assert_eq!(args["new_day"].as_str(), Some("2026-10-25"));
+    fn subtask_json_keeps_ids_and_omits_new_fields() {
+        let mut existing = Subtask::new("a");
+        existing.id = Some("s1".into());
+        assert_eq!(
+            subtask_json(&existing),
+            json!({"id":"s1","title":"a","completed_at":null})
+        );
+        assert_eq!(subtask_json(&Subtask::new("b")), json!({"title":"b"}));
     }
 }

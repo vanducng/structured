@@ -1,31 +1,106 @@
 mod edit;
+mod editor;
+mod input;
 mod keys;
 mod schedule;
+mod subtasks;
+#[cfg(test)]
+mod tests;
 
+use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 
 pub(in crate::tui) use keys::handle;
 
+use crate::agenda;
+use crate::clock;
 use crate::config::UiConfig;
-use crate::model::{Task, TaskRef};
+use crate::model::{Subtask, Task, TaskRef};
 
 use super::worker::{CacheKey, Reply, Request};
 
 pub(in crate::tui) enum Mode {
     Normal,
     Help,
-    Confirm,
+    Confirm(Doomed),
     Filter,
-    Input { draft: String, prompt: Prompt },
+    Input {
+        input: tui_input::Input,
+        prompt: Prompt,
+    },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::tui) enum Doomed {
+    Task,
+    Subtask,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(in crate::tui) enum Prompt {
     NewTitle,
     Title,
     Day,
     Time,
     Duration,
+    NewSubtask,
+    SubtaskTitle,
+}
+
+impl Prompt {
+    pub(in crate::tui) fn label(self) -> &'static str {
+        match self {
+            Self::NewTitle => "New task",
+            Self::Title => "Title",
+            Self::Day => "Date",
+            Self::Time => "Time",
+            Self::Duration => "Duration",
+            Self::NewSubtask => "New subtask",
+            Self::SubtaskTitle => "Subtask",
+        }
+    }
+
+    pub(in crate::tui) fn hint(self) -> &'static str {
+        match self {
+            Self::NewTitle | Self::Title => "type a title",
+            Self::Day => "YYYY-MM-DD, today, +1, or inbox",
+            Self::Time => "09:30, 09:30 45, or empty for all day",
+            Self::Duration => "45, 1h30, or 1:30",
+            Self::NewSubtask => "typing in the checklist",
+            Self::SubtaskTitle => "editing in the checklist",
+        }
+    }
+
+    pub(in crate::tui) fn steps(self) -> bool {
+        matches!(self, Self::Day | Self::Time | Self::Duration)
+    }
+
+    /// Subtask drafts are typed in place in the checklist, like the app's "Add Subtask" row.
+    pub(in crate::tui) fn inline(self) -> bool {
+        matches!(self, Self::NewSubtask | Self::SubtaskTitle)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::tui) enum Focus {
+    List,
+    Subtasks,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::tui) enum Tone {
+    Quiet,
+    Busy,
+    Good,
+    Bad,
+}
+
+pub(in crate::tui) struct Status {
+    pub(in crate::tui) text: String,
+    pub(in crate::tui) tone: Tone,
+    at: Instant,
 }
 
 enum Undo {
@@ -55,6 +130,12 @@ enum Undo {
         index: usize,
         key: CacheKey,
         removed: bool,
+        detaches: bool,
+    },
+    Subtasks {
+        task_ref: TaskRef,
+        previous: Vec<Subtask>,
+        detaches: bool,
     },
 }
 
@@ -63,21 +144,27 @@ pub(in crate::tui) struct App {
     pub(in crate::tui) offset: i64,
     tasks: Vec<Task>,
     pub(in crate::tui) selected: usize,
-    pub(in crate::tui) status: String,
+    pub(in crate::tui) sub_selected: usize,
+    pub(in crate::tui) focus: Focus,
+    pub(in crate::tui) status: Status,
     pub(in crate::tui) mode: Mode,
     g_pending: bool,
     pub(in crate::tui) query: String,
-    filter_literal: bool,
     pub(in crate::tui) detail_scroll: u16,
+    pub(in crate::tui) list_offset: Cell<usize>,
     pub(in crate::tui) config: UiConfig,
     cache: HashMap<CacheKey, Vec<Task>>,
     want: Option<CacheKey>,
     prefetch: Option<CacheKey>,
     load_inflight: bool,
+    pub(in crate::tui) loaded: bool,
     epoch: u64,
     undos: VecDeque<Undo>,
     reload_when_idle: bool,
     checks: Vec<(TaskRef, bool)>,
+    detaching: Vec<(TaskRef, CacheKey)>,
+    pub(in crate::tui) quitting: bool,
+    added_run: usize,
 }
 
 impl App {
@@ -87,22 +174,68 @@ impl App {
             offset: 0,
             tasks: Vec::new(),
             selected: 0,
-            status: "loading".into(),
+            sub_selected: 0,
+            focus: Focus::List,
+            status: Status {
+                text: "loading…".into(),
+                tone: Tone::Busy,
+                at: Instant::now(),
+            },
             mode: Mode::Normal,
             g_pending: false,
             query: String::new(),
-            filter_literal: false,
             detail_scroll: 0,
+            list_offset: Cell::new(0),
             config,
             cache: HashMap::new(),
             want: None,
             prefetch: None,
             load_inflight: false,
+            loaded: false,
             epoch: 0,
             undos: VecDeque::new(),
             reload_when_idle: false,
             checks: Vec::new(),
+            detaching: Vec::new(),
+            quitting: false,
+            added_run: 0,
         }
+    }
+
+    pub(in crate::tui) fn pending(&self) -> usize {
+        self.undos.len()
+    }
+
+    /// Keeps the highlighted task when the search changes, if it still matches.
+    pub(in crate::tui) fn set_query(&mut self, query: String) {
+        let selected = self.selected_task().and_then(|task| task.task_ref().ok());
+        self.query = query;
+        self.selected = 0;
+        self.follow(selected.as_ref());
+        self.detail_scroll = 0;
+    }
+
+    pub(in crate::tui) fn clear_query(&mut self) {
+        self.set_query(String::new());
+    }
+
+    pub(in crate::tui) fn say(&mut self, tone: Tone, text: impl Into<String>) {
+        self.status = Status {
+            text: text.into(),
+            tone,
+            at: Instant::now(),
+        };
+    }
+
+    /// Good and quiet notices fade so the footer does not keep stale news; errors stay until the next action.
+    pub(in crate::tui) fn expire_status(&mut self) -> bool {
+        let stale = matches!(self.status.tone, Tone::Good | Tone::Quiet)
+            && !self.status.text.is_empty()
+            && self.status.at.elapsed() > Duration::from_secs(4);
+        if stale {
+            self.say(Tone::Quiet, "");
+        }
+        stale
     }
 
     pub(in crate::tui) fn visible(&self) -> Vec<&Task> {
@@ -125,12 +258,17 @@ impl App {
             .map(|(index, _)| index)
     }
 
-    pub(in crate::tui) fn heading(&self) -> String {
-        if self.inbox {
-            "Inbox".into()
+    pub(in crate::tui) fn viewed_day(&self) -> chrono::NaiveDate {
+        clock::today() + chrono::Duration::days(self.offset)
+    }
+
+    pub(in crate::tui) fn inbox_open(&self) -> Option<usize> {
+        let tasks = if self.inbox {
+            Some(&self.tasks)
         } else {
-            day_heading(self.offset)
-        }
+            self.cache.get(&CacheKey::Inbox)
+        };
+        tasks.map(|tasks| tasks.iter().filter(|task| !task.done()).count())
     }
 
     fn cache_key(&self) -> CacheKey {
@@ -145,23 +283,35 @@ impl App {
 
     fn clamp(&mut self) {
         let count = self.visible().len();
+        self.selected = self.selected.min(count.saturating_sub(1));
+        let subs = self.selected_task().map_or(0, |task| task.subtasks.len());
+        self.sub_selected = self.sub_selected.min(subs.saturating_sub(1));
         if count == 0 {
-            self.selected = 0;
-        } else if self.selected >= count {
-            self.selected = count - 1;
+            self.focus = Focus::List;
         }
+    }
+
+    pub(in crate::tui) fn select(&mut self, index: usize) {
+        if index != self.selected {
+            self.sub_selected = 0;
+        }
+        self.selected = index;
+        self.detail_scroll = 0;
     }
 
     pub(in crate::tui) fn reveal(&mut self) {
         let key = self.cache_key();
-        self.selected = 0;
-        self.detail_scroll = 0;
+        self.select(0);
+        self.focus = Focus::List;
+        self.list_offset.set(0);
         if let Some(tasks) = self.cache.get(&key).cloned() {
             self.tasks = tasks;
-            self.status = format!("{}  {} tasks", self.heading(), self.tasks.len());
+            self.loaded = true;
+            self.say(Tone::Quiet, "");
         } else {
             self.tasks.clear();
-            self.status = "loading".into();
+            self.loaded = false;
+            self.say(Tone::Busy, "loading…");
         }
         self.want = Some(key);
     }
@@ -209,13 +359,16 @@ impl App {
                 tasks,
             } => self.apply_load(epoch, key, tasks, show),
             Reply::LoadFailed { key, show, message } => self.fail_load(key, show, message),
-            Reply::Saved { message } => self.finish_write(true, message.into()),
-            Reply::WriteFailed { message } => self.finish_write(false, message),
+            Reply::Saved { message, task } => {
+                self.finish_write(Ok(task.map(|task| *task)), message.into())
+            }
+            Reply::WriteFailed { message } => self.finish_write(Err(()), message),
         }
     }
 
-    fn apply_load(&mut self, epoch: u64, key: CacheKey, tasks: Vec<Task>, show: bool) {
+    fn apply_load(&mut self, epoch: u64, key: CacheKey, mut tasks: Vec<Task>, show: bool) {
         self.load_inflight = false;
+        agenda::sort(&mut tasks, key == CacheKey::Inbox);
         if epoch != self.epoch {
             if key == self.cache_key() {
                 if self.undos.is_empty() {
@@ -227,10 +380,14 @@ impl App {
             return;
         }
         if show && key == self.cache_key() {
+            if self.undos.is_empty() {
+                self.detaching.retain(|(_, view)| view != &key);
+            }
             self.replace_tasks(tasks);
             self.remember();
-            if self.undos.is_empty() {
-                self.status = format!("{}  {} tasks", self.heading(), self.tasks.len());
+            self.loaded = true;
+            if self.undos.is_empty() && self.status.tone == Tone::Busy {
+                self.say(Tone::Quiet, "");
             }
         } else {
             self.cache.insert(key, tasks);
@@ -243,7 +400,7 @@ impl App {
     fn fail_load(&mut self, key: CacheKey, show: bool, message: String) {
         self.load_inflight = false;
         if show && key == self.cache_key() {
-            self.status = message;
+            self.say(Tone::Bad, message);
         }
     }
 
@@ -264,19 +421,26 @@ impl App {
     fn replace_tasks(&mut self, tasks: Vec<Task>) {
         let selected = self.selected_task().and_then(|task| task.task_ref().ok());
         self.tasks = tasks;
-        if let Some(task_ref) = selected {
-            let query = self.query.clone();
-            if let Some(pos) = self
-                .tasks
+        self.apply_checks();
+        self.follow(selected.as_ref());
+    }
+
+    fn follow(&mut self, task_ref: Option<&TaskRef>) {
+        if let Some(task_ref) = task_ref
+            && let Some(pos) = self
+                .visible()
                 .iter()
-                .filter(|task| matches(task, &query))
-                .position(|task| task.task_ref().ok().as_ref() == Some(&task_ref))
-            {
-                self.selected = pos;
-            }
+                .position(|task| task.task_ref().ok().as_ref() == Some(task_ref))
+        {
+            self.selected = pos;
         }
         self.clamp();
-        self.apply_checks();
+    }
+
+    fn resort(&mut self) {
+        let selected = self.selected_task().and_then(|task| task.task_ref().ok());
+        agenda::sort(&mut self.tasks, self.inbox);
+        self.follow(selected.as_ref());
     }
 
     fn apply_checks(&mut self) {
@@ -294,8 +458,7 @@ impl App {
             if task.done() == completed {
                 continue;
             }
-            task.is_completed = completed;
-            task.completed_at = completed.then(|| "1".into());
+            task.set_done(completed);
             keep.push((task_ref, completed));
         }
         self.checks = keep;
@@ -308,21 +471,7 @@ impl App {
 }
 
 pub(in crate::tui) fn day_string(offset: i64) -> String {
-    (chrono::Local::now().date_naive() + chrono::Duration::days(offset))
-        .format("%Y-%m-%d")
-        .to_string()
-}
-
-pub(in crate::tui) fn day_heading(offset: i64) -> String {
-    let date = chrono::Local::now().date_naive() + chrono::Duration::days(offset);
-    let when = date.format("%a %d %b");
-    match offset {
-        0 => format!("Today  {when}"),
-        1 => format!("Tomorrow  {when}"),
-        -1 => format!("Yesterday  {when}"),
-        n if n > 0 => format!("{when}  +{n}"),
-        n => format!("{when}  {n}"),
-    }
+    clock::stamp(clock::today() + chrono::Duration::days(offset))
 }
 
 pub(in crate::tui) fn matches(task: &Task, query: &str) -> bool {
@@ -330,100 +479,10 @@ pub(in crate::tui) fn matches(task: &Task, query: &str) -> bool {
         return true;
     }
     let query = query.to_lowercase();
-    task.title.to_lowercase().contains(&query) || task.note.to_lowercase().contains(&query)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::UiConfig;
-
-    fn task(title: &str, done: bool) -> Task {
-        Task {
-            id: Some(title.into()),
-            recurring_id: None,
-            title: title.into(),
-            note: String::new(),
-            day: None,
-            start_time: None,
-            duration: None,
-            is_all_day: false,
-            is_in_inbox: false,
-            is_completed: done,
-            is_recurring: false,
-            completed_at: done.then(|| "1".into()),
-            symbol: None,
-            color: None,
-            energy_level: None,
-        }
-    }
-
-    #[test]
-    fn cached_inbox_paints_without_waiting() {
-        let mut app = App::new(UiConfig::default());
-        app.tasks = vec![task("today", false)];
-        app.cache
-            .insert(CacheKey::Inbox, vec![task("later", false)]);
-        app.inbox = true;
-        app.reveal();
-        assert_eq!(app.tasks[0].title, "later");
-        assert_eq!(app.want, Some(CacheKey::Inbox));
-        assert_ne!(app.status, "loading");
-    }
-
-    #[test]
-    fn missing_cache_shows_loading() {
-        let mut app = App::new(UiConfig::default());
-        app.tasks = vec![task("today", false)];
-        app.inbox = true;
-        app.reveal();
-        assert!(app.tasks.is_empty());
-        assert_eq!(app.status, "loading");
-    }
-
-    #[test]
-    fn tick_does_not_schedule_a_reload() {
-        let mut app = App::new(UiConfig::default());
-        app.tasks = vec![task("a", false)];
-        assert!(app.toggle().is_some());
-        app.finish_write(true, "done".into());
-        assert!(app.tasks[0].done());
-        assert!(app.want.is_none());
-    }
-
-    #[test]
-    fn stale_reload_keeps_the_tick() {
-        let mut app = App::new(UiConfig::default());
-        app.tasks = vec![task("a", false)];
-        assert!(app.toggle().is_some());
-        app.apply_load(0, CacheKey::Today, vec![task("a", false)], true);
-        assert!(app.tasks[0].done());
-        app.finish_write(true, "done".into());
-        assert_eq!(app.want, Some(CacheKey::Today));
-    }
-
-    #[test]
-    fn uncheck_stays_blank_when_the_server_still_has_a_stamp() {
-        let mut app = App::new(UiConfig::default());
-        let mut stamped = task("a", false);
-        stamped.completed_at = Some("2026-10-23T01:00:00Z".into());
-        app.tasks = vec![stamped.clone()];
-        assert!(app.tasks[0].done());
-        assert!(app.toggle().is_some());
-        assert!(!app.tasks[0].done());
-        let epoch = app.epoch;
-        app.apply_load(epoch, CacheKey::Today, vec![stamped], true);
-        assert!(!app.tasks[0].done());
-        assert!(app.tasks[0].completed_at.is_none());
-        assert!(app.toggle().is_some());
-        assert!(app.tasks[0].done());
-    }
-
-    #[test]
-    fn headings_and_filter() {
-        assert!(day_heading(0).starts_with("Today"));
-        assert!(day_heading(1).starts_with("Tomorrow"));
-        assert!(matches(&task("Write notes", false), "note"));
-        assert!(!matches(&task("Write notes", false), "missing"));
-    }
+    task.title.to_lowercase().contains(&query)
+        || task.note.to_lowercase().contains(&query)
+        || task
+            .subtasks
+            .iter()
+            .any(|sub| sub.title.to_lowercase().contains(&query))
 }
