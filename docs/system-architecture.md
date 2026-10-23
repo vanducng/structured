@@ -2,9 +2,9 @@
 
 `structured` is one Rust binary. The CLI and the TUI share the same model, API layer, and MCP client, and both talk to Structured Cloud over its public MCP endpoint.
 
-![Animated architecture: CLI and TUI requests flow through the API layer and MCP client to Structured Cloud](assets/architecture.gif)
+![Animated architecture: structured now travels from the terminal through lib.rs, api.rs, and mcp.rs to Structured Cloud and back as a timeline, and the TUI uses the same path](assets/architecture.gif)
 
-Open [architecture.html](assets/architecture.html) for the interactive version with the request trace. [architecture.archify.json](assets/architecture.archify.json) is its source.
+One run of `structured now`: the request goes through `lib.rs`, `api.rs`, and `mcp.rs` to Structured Cloud, the answer comes back through `api.rs` and `agenda.rs` to the terminal, and the TUI uses the same path.
 
 ## Components
 
