@@ -12,6 +12,7 @@ mod model;
 mod output;
 mod subtask;
 mod tui;
+mod update;
 
 pub use cli::Cli;
 pub use error::Error;
@@ -274,6 +275,7 @@ pub fn execute(cli: &Cli) -> Result<()> {
         }
         Command::Subtask(action) => subtask::run(action, json, cli.dry_run)?,
         Command::Tui => tui::run(config)?,
+        Command::Update => update::run(json, cli.dry_run)?,
         Command::Completions { shell } => {
             let mut command = Cli::command();
             generate(*shell, &mut command, "structured", &mut stdout());

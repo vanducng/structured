@@ -46,3 +46,4 @@ An unknown name in the list is skipped. The TUI shows the problem in red at star
 | `XDG_CONFIG_HOME` | Moves the config directory to `$XDG_CONFIG_HOME/structured` |
 | `STRUCTURED_MCP_URL` | Points the binary at another MCP endpoint. Tests and the TUI screen check use it to reach a local stand-in. |
 | `VISUAL`, `EDITOR` | The editor `ctrl-g` opens for a note |
+| `STRUCTURED_INSTALL_DIR`, `STRUCTURED_VERSION` | Read by `install.sh`: where to install, and which release tag. `structured update` sets the directory to its own. |

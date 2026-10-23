@@ -200,6 +200,8 @@ pub enum Command {
     Subtask(SubtaskCommand),
     /// Open the task manager.
     Tui,
+    /// Update to the latest release, in place. Runs install.sh from GitHub; needs curl.
+    Update,
     /// Print a shell completion script.
     Completions { shell: Shell },
 }

@@ -12,16 +12,11 @@ The demo runs on generic sample tasks. [Play it on asciinema](https://asciinema.
 
 ## Install
 
-Download the archive for your machine from the [latest release](https://github.com/vanducng/structured/releases/latest), check it, and put `structured` on `PATH`. Archives exist for `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`. Upgrading is the same steps.
-
 ```bash
-tag=$(gh release view --repo vanducng/structured --json tagName -q .tagName)
-target=aarch64-apple-darwin
-gh release download "$tag" --repo vanducng/structured -p "structured-$tag-$target.tar.gz" -p SHA256SUMS
-shasum -a 256 -c SHA256SUMS --ignore-missing
-tar -xzf "structured-$tag-$target.tar.gz"
-install -m 755 "structured-$tag-$target/structured" ~/.local/bin/structured
+curl -fsSL https://raw.githubusercontent.com/vanducng/structured/main/install.sh | sh
 ```
+
+This installs the latest release for macOS on Apple silicon or Linux x86_64 into `~/.local/bin`, after checking it against the release's `SHA256SUMS`. Later, `structured update` does the same in place.
 
 Or build from source with Rust 1.88 or newer:
 

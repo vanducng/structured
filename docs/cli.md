@@ -58,6 +58,7 @@ structured subtask done REF 2         # SUB is a 1-based number or a subtask id
 structured subtask edit REF 2 "Review with Sam"
 structured subtask delete REF 2 --yes
 structured account
+structured update                     # the latest release, in place
 structured login | logout | tui | completions zsh
 ```
 
