@@ -1,10 +1,10 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use crate::api::{self, NewTask, Patch};
+use crate::api::{self, NewTask, Patch, Scope};
 use crate::error::Result;
 use crate::mcp::Session;
-use crate::model::{Task, TaskRef};
+use crate::model::{Subtask, Task, TaskRef};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::tui) enum CacheKey {
@@ -26,20 +26,18 @@ pub(in crate::tui) enum Request {
     Delete {
         task_ref: TaskRef,
     },
-    Title {
+    Edit {
         task_ref: TaskRef,
-        title: String,
-    },
-    Note {
-        task_ref: TaskRef,
-        note: String,
+        patch: Patch,
+        scope: Option<Scope>,
     },
     Add {
         draft: NewTask,
     },
-    Schedule {
+    Subtasks {
         task_ref: TaskRef,
-        patch: Patch,
+        subtasks: Vec<Subtask>,
+        structural: bool,
     },
 }
 
@@ -57,6 +55,7 @@ pub(in crate::tui) enum Reply {
     },
     Saved {
         message: &'static str,
+        task: Option<Box<Task>>,
     },
     WriteFailed {
         message: String,
@@ -99,19 +98,25 @@ fn dispatch(session: &mut Session, request: Request) -> Reply {
         Request::Complete {
             task_ref,
             completed,
-        } => done(
-            api::set_completed(session, &task_ref, completed).map(|_| ()),
+        } => saved(
+            api::set_completed(session, &task_ref, completed),
             if completed { "done" } else { "reopened" },
         ),
-        Request::Delete { task_ref } => {
-            done(api::delete(session, &task_ref).map(|_| ()), "deleted")
-        }
-        Request::Title { task_ref, title } => done(edit_title(session, &task_ref, title), "saved"),
-        Request::Note { task_ref, note } => done(edit_note(session, &task_ref, note), "note saved"),
-        Request::Add { draft } => done(api::add(session, draft).map(|_| ()), "saved"),
-        Request::Schedule { task_ref, patch } => {
-            done(api::edit(session, &task_ref, patch).map(|_| ()), "saved")
-        }
+        Request::Delete { task_ref } => saved(api::delete(session, &task_ref), "deleted"),
+        Request::Edit {
+            task_ref,
+            patch,
+            scope,
+        } => saved(api::edit(session, &task_ref, patch, scope), "saved"),
+        Request::Add { draft } => saved(api::add(session, draft), "added"),
+        Request::Subtasks {
+            task_ref,
+            subtasks,
+            structural,
+        } => saved(
+            api::set_subtasks(session, &task_ref, &subtasks, structural),
+            "subtasks saved",
+        ),
     }
 }
 
@@ -123,45 +128,12 @@ fn fetch(session: &mut Session, key: &CacheKey) -> Result<Vec<Task>> {
     }
 }
 
-fn edit_title(session: &mut Session, task_ref: &TaskRef, title: String) -> Result<()> {
-    api::edit(
-        session,
-        task_ref,
-        Patch {
-            title: Some(title),
-            note: None,
-            day: None,
-            start_time: None,
-            duration: None,
-            all_day: None,
-            inbox: false,
-            new_day: None,
-        },
-    )
-    .map(|_| ())
-}
-
-fn edit_note(session: &mut Session, task_ref: &TaskRef, note: String) -> Result<()> {
-    api::edit(
-        session,
-        task_ref,
-        Patch {
-            title: None,
-            note: Some(note),
-            day: None,
-            start_time: None,
-            duration: None,
-            all_day: None,
-            inbox: false,
-            new_day: None,
-        },
-    )
-    .map(|_| ())
-}
-
-fn done(result: Result<()>, message: &'static str) -> Reply {
+fn saved(result: Result<serde_json::Value>, message: &'static str) -> Reply {
     match result {
-        Ok(()) => Reply::Saved { message },
+        Ok(value) => Reply::Saved {
+            message,
+            task: api::task_in(&value).map(Box::new),
+        },
         Err(err) => Reply::WriteFailed {
             message: err.to_string(),
         },

@@ -7,6 +7,13 @@ use crate::model::{self, Task};
 
 const MCP_URL: &str = "https://mcp.structured.app/mcp";
 
+fn endpoint() -> String {
+    std::env::var("STRUCTURED_MCP_URL")
+        .ok()
+        .filter(|url| !url.is_empty())
+        .unwrap_or_else(|| MCP_URL.to_owned())
+}
+
 pub struct Session {
     http: Client,
     auth: Auth,
@@ -14,7 +21,16 @@ pub struct Session {
     session_id: Option<String>,
     next_id: u64,
     ready: bool,
+    pub dry_run: bool,
 }
+
+const WRITES: [&str; 5] = [
+    "create_task",
+    "create_recurring_task",
+    "update_task",
+    "complete_task",
+    "delete_task",
+];
 
 impl Session {
     pub fn connect() -> Result<Self> {
@@ -30,6 +46,7 @@ impl Session {
             session_id: None,
             next_id: 1,
             ready: false,
+            dry_run: false,
         })
     }
 
@@ -60,6 +77,11 @@ impl Session {
     }
 
     pub fn call(&mut self, name: &str, arguments: Value) -> Result<Value> {
+        if self.dry_run && WRITES.contains(&name) {
+            return Ok(
+                json!({"structuredContent": {"dry_run": true, "tool": name, "arguments": arguments}}),
+            );
+        }
         self.ensure()?;
         self.rpc(
             "tools/call",
@@ -84,7 +106,8 @@ impl Session {
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("MCP error");
-            if text.to_ascii_lowercase().contains("auth") {
+            let lower = text.to_ascii_lowercase();
+            if lower.contains("unauthorized") || lower.contains("not authenticated") {
                 return Err(Error::Auth);
             }
             return Err(Error::Api(text.to_owned()));
@@ -93,16 +116,7 @@ impl Session {
     }
 
     fn rpc_raw(&mut self, method: &str, params: Option<Value>, note: bool) -> Result<Value> {
-        let token = match auth::bearer(&self.http, &mut self.auth) {
-            Ok(token) => token,
-            Err(Error::Auth) => return Err(Error::Auth),
-            Err(err) => {
-                if err.to_string().contains("401") || err.to_string().contains("403") {
-                    return Err(Error::Auth);
-                }
-                return Err(err);
-            }
-        };
+        let token = auth::bearer(&self.http, &mut self.auth)?;
         let mut body = json!({"jsonrpc": "2.0", "method": method});
         if !note {
             body["id"] = json!(self.next_id);
@@ -113,7 +127,7 @@ impl Session {
         }
         let mut request = self
             .http
-            .post(MCP_URL)
+            .post(endpoint())
             .bearer_auth(token)
             .header("Accept", "application/json, text/event-stream")
             .header("MCP-Protocol-Version", &self.protocol)
@@ -129,7 +143,7 @@ impl Session {
         {
             self.session_id = Some(session.to_owned());
         }
-        if response.status().as_u16() == 401 {
+        if matches!(response.status().as_u16(), 401 | 403) {
             return Err(Error::Auth);
         }
         if !response.status().is_success() {

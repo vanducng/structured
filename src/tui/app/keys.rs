@@ -1,101 +1,122 @@
-use std::io::{self, Write};
-use std::process::Command;
 use std::sync::mpsc::Sender;
 
-use crossterm::ExecutableCommand;
-use crossterm::event::{KeyCode, KeyModifiers};
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::error::Result;
 
-use super::schedule::{self, Spec};
-use super::{App, Prompt};
+use super::{App, Doomed, Focus, Mode, Prompt, Tone};
 use crate::tui::worker::Request;
 
+/// Returns true when the app should quit.
 pub(in crate::tui) fn handle(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     tx: &Sender<Request>,
-    code: KeyCode,
-    modifiers: KeyModifiers,
+    key: KeyEvent,
 ) -> Result<bool> {
-    if matches!(app.mode, super::Mode::Input { .. }) {
-        return input_key(app, tx, code);
-    }
-    if matches!(app.mode, super::Mode::Filter) {
-        return filter_key(app, code);
-    }
-    if matches!(app.mode, super::Mode::Help) {
-        app.mode = super::Mode::Normal;
-        return Ok(false);
-    }
-    if matches!(app.mode, super::Mode::Confirm) {
-        if matches!(code, KeyCode::Char('y')) {
-            send(tx, app.delete_selected());
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match app.mode {
+        Mode::Input { .. } => return Ok(super::input::prompt_key(app, tx, key)),
+        Mode::Filter => return Ok(super::input::filter_key(app, key)),
+        _ if ctrl && key.code == KeyCode::Char('c') => return Ok(true),
+        Mode::Help => {
+            app.mode = Mode::Normal;
+            return Ok(false);
         }
-        app.mode = super::Mode::Normal;
+        Mode::Confirm(doomed) => {
+            app.mode = Mode::Normal;
+            if key.code == KeyCode::Char('y') {
+                send(
+                    tx,
+                    if doomed == Doomed::Task {
+                        app.delete_selected()
+                    } else {
+                        app.delete_subtask()
+                    },
+                );
+            } else {
+                let what = if doomed == Doomed::Task {
+                    "task kept"
+                } else {
+                    "subtask kept"
+                };
+                app.say(Tone::Quiet, what);
+            }
+            return Ok(false);
+        }
+        Mode::Normal => {}
+    }
+    if ctrl {
+        match key.code {
+            KeyCode::Char('d') => move_by(app, 8),
+            KeyCode::Char('u') => move_by(app, -8),
+            KeyCode::Char('e') => app.detail_scroll = app.detail_scroll.saturating_add(1),
+            KeyCode::Char('y') => app.detail_scroll = app.detail_scroll.saturating_sub(1),
+            KeyCode::Char('g') => super::editor::edit_note(terminal, app, tx)?,
+            _ => {}
+        }
+        app.g_pending = false;
         return Ok(false);
+    }
+    let quit = match app.focus {
+        Focus::List => list_key(app, tx, key.code),
+        Focus::Subtasks => subtask_key(app, tx, key.code),
+    };
+    if key.code != KeyCode::Char('g') {
+        app.g_pending = false;
+    }
+    Ok(quit)
+}
+
+fn shared_key(app: &mut App, code: KeyCode) -> Option<bool> {
+    match code {
+        KeyCode::Char('q') => return Some(true),
+        KeyCode::Char('?') => app.mode = Mode::Help,
+        KeyCode::Char('r') => {
+            app.arm_refresh();
+            app.say(Tone::Busy, "refreshing…");
+        }
+        _ => return None,
+    }
+    Some(false)
+}
+
+fn list_key(app: &mut App, tx: &Sender<Request>, code: KeyCode) -> bool {
+    if let Some(quit) = shared_key(app, code) {
+        return quit;
     }
     match code {
-        KeyCode::Char('q') => return Ok(true),
-        KeyCode::Char('?') => app.mode = super::Mode::Help,
         KeyCode::Char('j') | KeyCode::Down => move_by(app, 1),
         KeyCode::Char('k') | KeyCode::Up => move_by(app, -1),
-        KeyCode::Char('G') => {
-            app.selected = app.visible().len().saturating_sub(1);
-            app.detail_scroll = 0;
+        KeyCode::Char('G') | KeyCode::End => app.select(app.visible().len().saturating_sub(1)),
+        KeyCode::Home => app.select(0),
+        KeyCode::Char('g') if app.g_pending => {
+            app.select(0);
+            app.g_pending = false;
         }
-        KeyCode::Char('g') if modifiers.contains(KeyModifiers::CONTROL) => {
-            edit_note(terminal, app, tx)?
+        KeyCode::Char('g') => app.g_pending = true,
+        KeyCode::Enter | KeyCode::Char('l') => {
+            app.focus_subtasks();
         }
-        KeyCode::Char('g') => {
-            if app.g_pending {
-                app.selected = 0;
-                app.detail_scroll = 0;
-                app.g_pending = false;
-            } else {
-                app.g_pending = true;
+        KeyCode::Char('A') => {
+            if app.focus_subtasks() {
+                app.mode = super::input::prompt(Prompt::NewSubtask, String::new());
             }
         }
-        KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => move_by(app, 8),
-        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => move_by(app, -8),
-        KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.detail_scroll = app.detail_scroll.saturating_add(1);
+        KeyCode::Esc if !app.query.is_empty() => app.clear_query(),
+        KeyCode::Char('d') if app.selected_task().is_some() => {
+            app.mode = Mode::Confirm(Doomed::Task)
         }
-        KeyCode::Char('y') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.detail_scroll = app.detail_scroll.saturating_sub(1);
-        }
-        KeyCode::Char('d') => app.mode = super::Mode::Confirm,
-        KeyCode::Char('t') => show_today(app),
-        KeyCode::Char('i') => show_inbox(app),
-        KeyCode::Tab | KeyCode::Char('h') | KeyCode::Char('l') => {
-            app.inbox = !app.inbox;
-            app.reveal();
-        }
-        KeyCode::Char('[') | KeyCode::Left => {
-            app.inbox = false;
-            app.offset -= 1;
-            app.reveal();
-        }
-        KeyCode::Char(']') | KeyCode::Right => {
-            app.inbox = false;
-            app.offset += 1;
-            app.reveal();
-        }
-        KeyCode::Char('/') => {
-            app.filter_literal = true;
-            app.mode = super::Mode::Filter;
-        }
-        KeyCode::Char('f') => find(app),
-        KeyCode::Char('r') => app.arm_refresh(),
-        KeyCode::Char('a') => {
-            app.mode = super::Mode::Input {
-                draft: String::new(),
-                prompt: Prompt::NewTitle,
-            }
-        }
+        KeyCode::Char('t') => show(app, false, 0),
+        KeyCode::Char('i') => show(app, true, app.offset),
+        KeyCode::Tab => show(app, !app.inbox, app.offset),
+        KeyCode::Char('[') | KeyCode::Left => show(app, false, app.offset - 1),
+        KeyCode::Char(']') | KeyCode::Right => show(app, false, app.offset + 1),
+        KeyCode::Char('/') => app.mode = Mode::Filter,
+        KeyCode::Char('f') | KeyCode::Char('n') if !app.query.is_empty() => step_match(app, 1),
+        KeyCode::Char('N') if !app.query.is_empty() => step_match(app, -1),
+        KeyCode::Char('f') => app.mode = Mode::Filter,
+        KeyCode::Char('a') => app.mode = super::input::prompt(Prompt::NewTitle, String::new()),
         KeyCode::Char('e') => open_prompt(app, Prompt::Title),
         KeyCode::Char('D') => open_prompt(app, Prompt::Day),
         KeyCode::Char('T') => open_prompt(app, Prompt::Time),
@@ -105,353 +126,78 @@ pub(in crate::tui) fn handle(
         KeyCode::Char('x') | KeyCode::Char(' ') => send(tx, app.toggle()),
         _ => {}
     }
-    if !matches!(code, KeyCode::Char('g')) || modifiers.contains(KeyModifiers::CONTROL) {
-        app.g_pending = false;
-    }
-    Ok(false)
+    false
 }
 
-fn show_today(app: &mut App) {
-    if app.inbox || app.offset != 0 {
-        app.inbox = false;
-        app.offset = 0;
-        app.reveal();
+fn subtask_key(app: &mut App, tx: &Sender<Request>, code: KeyCode) -> bool {
+    if let Some(quit) = shared_key(app, code) {
+        return quit;
     }
-}
-
-fn show_inbox(app: &mut App) {
-    if !app.inbox {
-        app.inbox = true;
-        app.reveal();
-    }
-}
-
-fn find(app: &mut App) {
-    if app.query.is_empty() {
-        app.filter_literal = false;
-        app.mode = super::Mode::Filter;
-        return;
-    }
-    find_next(app);
-}
-
-fn find_next(app: &mut App) {
-    let count = app.visible().len();
-    if count == 0 {
-        app.selected = 0;
-        return;
-    }
-    app.selected = if app.selected >= count {
-        0
-    } else {
-        (app.selected + 1) % count
-    };
-    app.detail_scroll = 0;
-}
-
-fn move_by(app: &mut App, delta: isize) {
-    let count = app.visible().len();
-    if count == 0 {
-        return;
-    }
-    let next = app.selected as isize + delta;
-    app.selected = next.clamp(0, count as isize - 1) as usize;
-    app.detail_scroll = 0;
-}
-
-fn input_key(app: &mut App, tx: &Sender<Request>, code: KeyCode) -> Result<bool> {
-    let super::Mode::Input { mut draft, prompt } =
-        std::mem::replace(&mut app.mode, super::Mode::Normal)
-    else {
-        return Ok(false);
-    };
-    let anchor = app
-        .selected_task()
-        .and_then(|task| task.day.as_deref())
-        .and_then(|day| chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok())
-        .unwrap_or_else(|| chrono::Local::now().date_naive());
+    let has_one = app.subtask_count() > 0;
     match code {
-        KeyCode::Esc => {}
-        KeyCode::Enter => submit_prompt(app, tx, &draft, prompt),
-        KeyCode::Backspace => {
-            draft.pop();
-            app.mode = super::Mode::Input { draft, prompt };
-        }
-        KeyCode::Up | KeyCode::Down => {
-            let step: i64 = if matches!(code, KeyCode::Up) { 1 } else { -1 };
-            draft = match prompt {
-                Prompt::Day => schedule::shift_date(&draft, anchor, step),
-                Prompt::Time => schedule::shift_clock(&draft, step * 15),
-                Prompt::Duration => schedule::shift_duration(&draft, step * 15),
-                Prompt::NewTitle | Prompt::Title => draft,
-            };
-            app.mode = super::Mode::Input { draft, prompt };
-        }
-        KeyCode::Char(ch) => {
-            draft.push(ch);
-            app.mode = super::Mode::Input { draft, prompt };
-        }
-        _ => app.mode = super::Mode::Input { draft, prompt },
+        KeyCode::Char('j') | KeyCode::Down => app.move_subtask(1),
+        KeyCode::Char('k') | KeyCode::Up => app.move_subtask(-1),
+        KeyCode::Char('h') | KeyCode::Left | KeyCode::Esc => app.focus = Focus::List,
+        KeyCode::Char('x') | KeyCode::Char(' ') if has_one => send(tx, app.toggle_subtask()),
+        KeyCode::Char('a') => app.mode = super::input::prompt(Prompt::NewSubtask, String::new()),
+        KeyCode::Char('e') if has_one => open_prompt(app, Prompt::SubtaskTitle),
+        KeyCode::Char('d') if has_one => app.mode = Mode::Confirm(Doomed::Subtask),
+        KeyCode::Char('J') if has_one => send(tx, app.reorder_subtask(1)),
+        KeyCode::Char('K') if has_one => send(tx, app.reorder_subtask(-1)),
+        _ => {}
     }
-    Ok(false)
+    false
 }
 
-fn submit_prompt(app: &mut App, tx: &Sender<Request>, draft: &str, prompt: Prompt) {
-    let draft = draft.trim();
-    let anchor = app
-        .selected_task()
-        .and_then(|task| task.day.as_deref())
-        .and_then(|day| chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok())
-        .unwrap_or_else(|| chrono::Local::now().date_naive());
-    match prompt {
-        Prompt::NewTitle | Prompt::Title => {
-            if draft.is_empty() {
-                app.status = "title required".into();
-                return;
-            }
-            let title = draft.to_owned();
-            if matches!(prompt, Prompt::Title) {
-                send(tx, app.rename(title));
-            } else {
-                send(tx, Some(app.queue_add(title)));
-            }
-        }
-        Prompt::Day => match schedule::parse_date(draft, anchor) {
-            Ok(choice) => send(tx, app.reschedule(Spec::Date(choice))),
-            Err(err) => app.status = err,
-        },
-        Prompt::Time => match schedule::parse_clock(draft) {
-            Ok(choice) => send(tx, app.reschedule(Spec::Clock(choice))),
-            Err(err) => app.status = err,
-        },
-        Prompt::Duration => match schedule::parse_duration(draft) {
-            Ok(mins) => send(tx, app.reschedule(Spec::Duration(mins))),
-            Err(err) => app.status = err,
-        },
+fn show(app: &mut App, inbox: bool, offset: i64) {
+    if app.inbox != inbox || (!inbox && app.offset != offset) {
+        app.inbox = inbox;
+        app.offset = offset;
+        app.reveal();
+    }
+}
+
+fn step_match(app: &mut App, delta: isize) {
+    let count = app.visible().len();
+    if count > 0 {
+        let next = (app.selected as isize + delta).rem_euclid(count as isize) as usize;
+        app.select(next);
+    }
+}
+
+pub(super) fn move_by(app: &mut App, delta: isize) {
+    let count = app.visible().len();
+    if count > 0 {
+        app.select(app.selected.saturating_add_signed(delta).min(count - 1));
     }
 }
 
 fn open_prompt(app: &mut App, prompt: Prompt) {
     let Some(task) = app.selected_task() else {
-        app.status = "no task".into();
+        app.say(Tone::Bad, "no task selected");
         return;
     };
     let draft = match prompt {
         Prompt::Title => task.title.clone(),
-        Prompt::NewTitle => String::new(),
         Prompt::Day => task.day.clone().unwrap_or_default(),
-        Prompt::Time => match task.when().as_str() {
-            "all" | "inbox" => String::new(),
-            clock => clock.to_owned(),
-        },
+        Prompt::Time => task.timed().map(crate::clock::clock).unwrap_or_default(),
         Prompt::Duration => task
             .duration
             .filter(|mins| *mins > 0)
             .map(|mins| mins.to_string())
             .unwrap_or_default(),
+        Prompt::SubtaskTitle => task
+            .subtasks
+            .get(app.sub_selected)
+            .map(|sub| sub.title.clone())
+            .unwrap_or_default(),
+        Prompt::NewTitle | Prompt::NewSubtask => String::new(),
     };
-    app.mode = super::Mode::Input { draft, prompt };
+    app.mode = super::input::prompt(prompt, draft);
 }
 
-fn filter_key(app: &mut App, code: KeyCode) -> Result<bool> {
-    match code {
-        KeyCode::Esc => {
-            app.query.clear();
-            app.mode = super::Mode::Normal;
-            app.selected = 0;
-        }
-        KeyCode::Enter => app.mode = super::Mode::Normal,
-        KeyCode::Char('f') if !app.filter_literal && !app.query.is_empty() => find_next(app),
-        KeyCode::Char('f') if !app.filter_literal => app.mode = super::Mode::Normal,
-        KeyCode::Up | KeyCode::Left => move_by(app, -1),
-        KeyCode::Down | KeyCode::Right => move_by(app, 1),
-        KeyCode::Backspace => {
-            app.query.pop();
-            app.selected = 0;
-        }
-        KeyCode::Char(ch) => {
-            app.query.push(ch);
-            app.selected = 0;
-        }
-        _ => {}
-    }
-    Ok(false)
-}
-
-fn send(tx: &Sender<Request>, request: Option<Request>) {
+pub(super) fn send(tx: &Sender<Request>, request: Option<Request>) {
     if let Some(request) = request {
         let _ = tx.send(request);
-    }
-}
-
-fn edit_note(
-    terminal: &mut ratatui::DefaultTerminal,
-    app: &mut App,
-    tx: &Sender<Request>,
-) -> Result<()> {
-    let Some(index) = app.selected_index() else {
-        app.status = "no task".into();
-        return Ok(());
-    };
-    if app
-        .tasks
-        .get(index)
-        .and_then(|task| task.task_ref().ok())
-        .is_none()
-    {
-        app.status = "task has no id".into();
-        return Ok(());
-    }
-    let previous = app.tasks[index].note.clone();
-    let path = std::env::temp_dir().join(format!("structured-note-{}.md", std::process::id()));
-    std::fs::write(&path, &previous)?;
-    suspend(terminal)?;
-    let edited = run_editor(&path);
-    restore(terminal)?;
-    let read = std::fs::read_to_string(&path);
-    let _ = std::fs::remove_file(&path);
-    if !edited? {
-        app.status = "editor closed".into();
-        return Ok(());
-    }
-    let note = match read {
-        Ok(note) => note,
-        Err(_) => {
-            app.status = "could not read the note".into();
-            return Ok(());
-        }
-    };
-    let next = note.trim_end_matches('\n').to_owned();
-    let prev = previous.trim_end_matches('\n');
-    if next == prev {
-        app.status = "note unchanged".into();
-        return Ok(());
-    }
-    send(tx, app.update_note(next, prev.to_owned()));
-    Ok(())
-}
-
-fn editor_program() -> String {
-    std::env::var("VISUAL")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var("EDITOR").ok())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "nvim".into())
-}
-
-fn run_editor(path: &std::path::Path) -> Result<bool> {
-    let editor = editor_program();
-    let mut parts = editor.split_whitespace();
-    let program = parts.next().unwrap_or("nvim");
-    let status = Command::new(program).args(parts).arg(path).status()?;
-    Ok(status.success())
-}
-
-fn suspend(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
-    disable_raw_mode()?;
-    io::stdout().execute(LeaveAlternateScreen)?;
-    let _ = terminal.show_cursor();
-    let _ = io::stdout().flush();
-    Ok(())
-}
-
-fn restore(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
-    enable_raw_mode()?;
-    io::stdout().execute(EnterAlternateScreen)?;
-    terminal.clear()?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::{App, Mode};
-    use super::{filter_key, find};
-    use crate::config::UiConfig;
-    use crate::model::Task;
-    use crossterm::event::KeyCode;
-
-    fn task(title: &str) -> Task {
-        Task {
-            id: Some(title.into()),
-            recurring_id: None,
-            title: title.into(),
-            note: String::new(),
-            day: None,
-            start_time: None,
-            duration: None,
-            is_all_day: false,
-            is_in_inbox: false,
-            is_completed: false,
-            is_recurring: false,
-            completed_at: None,
-            symbol: None,
-            color: None,
-            energy_level: None,
-        }
-    }
-
-    #[test]
-    fn filter_arrows_move_between_matches() {
-        let mut app = App::new(UiConfig::default());
-        app.tasks = vec![task("alpha"), task("beta notes"), task("gamma notes")];
-        app.mode = Mode::Filter;
-        app.query = "notes".into();
-
-        filter_key(&mut app, KeyCode::Down).unwrap();
-        assert_eq!(app.selected, 1);
-        assert!(matches!(app.mode, Mode::Filter));
-        assert_eq!(app.query, "notes");
-        assert_eq!(app.selected_task().unwrap().title, "gamma notes");
-
-        filter_key(&mut app, KeyCode::Up).unwrap();
-        assert_eq!(app.selected_task().unwrap().title, "beta notes");
-        filter_key(&mut app, KeyCode::Right).unwrap();
-        assert_eq!(app.selected_task().unwrap().title, "gamma notes");
-        filter_key(&mut app, KeyCode::Left).unwrap();
-        assert_eq!(app.selected_task().unwrap().title, "beta notes");
-
-        filter_key(&mut app, KeyCode::Char('k')).unwrap();
-        assert_eq!(app.query, "notesk");
-        assert_eq!(app.selected, 0);
-        assert!(matches!(app.mode, Mode::Filter));
-    }
-
-    #[test]
-    fn f_opens_find_and_repeats_when_it_is_active() {
-        let mut app = App::new(UiConfig::default());
-        app.tasks = vec![task("alpha"), task("beta notes"), task("gamma notes")];
-
-        find(&mut app);
-        assert!(matches!(app.mode, Mode::Filter));
-        assert!(app.query.is_empty());
-
-        filter_key(&mut app, KeyCode::Char('f')).unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
-        assert!(app.query.is_empty());
-
-        app.mode = Mode::Filter;
-        app.query = "notes".into();
-        filter_key(&mut app, KeyCode::Char('f')).unwrap();
-        assert!(matches!(app.mode, Mode::Filter));
-        assert_eq!(app.query, "notes");
-        assert_eq!(app.selected_task().unwrap().title, "gamma notes");
-        filter_key(&mut app, KeyCode::Char('f')).unwrap();
-        assert_eq!(app.selected_task().unwrap().title, "beta notes");
-
-        app.mode = Mode::Normal;
-        find(&mut app);
-        assert_eq!(app.selected_task().unwrap().title, "gamma notes");
-        find(&mut app);
-        assert_eq!(app.selected_task().unwrap().title, "beta notes");
-
-        app.filter_literal = true;
-        app.mode = Mode::Filter;
-        app.query = "notes".into();
-        app.selected = 0;
-        filter_key(&mut app, KeyCode::Char('f')).unwrap();
-        assert_eq!(app.query, "notesf");
-        assert_eq!(app.selected, 0);
-        assert!(matches!(app.mode, Mode::Filter));
     }
 }

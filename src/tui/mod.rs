@@ -1,31 +1,30 @@
 mod app;
+mod theme;
 mod view;
 mod worker;
 
-use std::io::{self, stdout};
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
-use crossterm::ExecutableCommand;
-use crossterm::event::{self, Event, KeyEventKind};
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
 use crate::config;
 use crate::error::Result;
 
-use app::App;
+use app::{App, Tone};
+
+const REFRESH: Duration = Duration::from_secs(20);
 
 pub fn run() -> Result<()> {
     let (tx, rx) = worker::spawn()?;
     let mut app = App::new(config::load());
     app.reveal();
     app.pump(&tx);
-    let mut terminal = setup()?;
-    let _guard = RawGuard;
+    let mut terminal = ratatui::init();
+    let _guard = Restore;
     terminal.draw(|frame| view::draw(frame, &app))?;
     let mut last = Instant::now();
+    let mut minute = clock_minute();
     loop {
         let mut draw = false;
         loop {
@@ -36,21 +35,38 @@ pub fn run() -> Result<()> {
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    app.status = "sync stopped".into();
+                    app.say(Tone::Bad, "sync stopped");
                     terminal.draw(|frame| view::draw(frame, &app))?;
                     return Ok(());
                 }
             }
         }
+        if app.quitting && app.pending() == 0 {
+            if app.status.tone != Tone::Bad {
+                break;
+            }
+            app.quitting = false;
+        }
         app.pump(&tx);
+        draw |= app.expire_status() || minute != clock_minute();
+        minute = clock_minute();
         if draw {
             terminal.draw(|frame| view::draw(frame, &app))?;
         }
         if event::poll(Duration::from_millis(80))? {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    if app::handle(&mut terminal, &mut app, &tx, key.code, key.modifiers)? {
-                        break;
+                    if app::handle(&mut terminal, &mut app, &tx, key)? {
+                        if app.pending() == 0 || app.quitting {
+                            break;
+                        }
+                        app.quitting = true;
+                        let saves = app.pending();
+                        let noun = if saves == 1 { "save" } else { "saves" };
+                        app.say(
+                            Tone::Busy,
+                            format!("finishing {saves} {noun}, q again quits now"),
+                        );
                     }
                     app.pump(&tx);
                     terminal.draw(|frame| view::draw(frame, &app))?;
@@ -60,7 +76,7 @@ pub fn run() -> Result<()> {
                 }
                 _ => {}
             }
-        } else if last.elapsed() >= Duration::from_secs(20) && app.should_poll_refresh() {
+        } else if last.elapsed() >= REFRESH && app.should_poll_refresh() {
             app.arm_refresh();
             app.pump(&tx);
             last = Instant::now();
@@ -69,19 +85,15 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn setup() -> Result<ratatui::DefaultTerminal> {
-    enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
-    Ok(ratatui::Terminal::new(
-        ratatui::backend::CrosstermBackend::new(stdout()),
-    )?)
+/// The now-line and relative day labels move with the wall clock, so redraw once a minute.
+fn clock_minute() -> i64 {
+    chrono::Local::now().timestamp() / 60
 }
 
-struct RawGuard;
+struct Restore;
 
-impl Drop for RawGuard {
+impl Drop for Restore {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = io::stdout().execute(LeaveAlternateScreen);
+        ratatui::restore();
     }
 }

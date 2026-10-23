@@ -1,11 +1,41 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use std::fmt;
 
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Map, Value};
+
+use crate::clock;
 use crate::error::{Error, Result};
 
 pub const DEFAULT_SYMBOL: &str = "text.badge.checkmark";
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct Subtask {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+impl Subtask {
+    pub fn new(title: &str) -> Self {
+        Self {
+            title: title.to_owned(),
+            ..Self::default()
+        }
+    }
+
+    pub fn done(&self) -> bool {
+        self.completed_at.as_ref().is_some_and(|at| !at.is_empty())
+    }
+
+    pub fn set_done(&mut self, done: bool) {
+        self.completed_at = done.then(|| chrono::Utc::now().to_rfc3339());
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct Task {
     pub id: Option<String>,
     pub recurring_id: Option<String>,
@@ -28,6 +58,16 @@ pub struct Task {
     pub symbol: Option<String>,
     pub color: Option<String>,
     pub energy_level: Option<i64>,
+    #[serde(default, deserialize_with = "null_as_empty")]
+    pub subtasks: Vec<Subtask>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+fn null_as_empty<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<Subtask>, D::Error> {
+    Ok(Option::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl Task {
@@ -35,103 +75,102 @@ impl Task {
         self.is_completed || self.completed_at.as_ref().is_some_and(|v| !v.is_empty())
     }
 
-    pub fn when(&self) -> String {
-        if self.is_in_inbox && self.day.is_none() {
-            return "inbox".into();
-        }
-        if self.is_all_day || self.start_time.is_none() {
-            return "all".into();
-        }
-        clock(self.start_time.unwrap_or(0.0))
+    pub fn set_done(&mut self, done: bool) {
+        self.is_completed = done;
+        self.completed_at = done.then(|| chrono::Utc::now().to_rfc3339());
     }
 
-    pub fn duration_label(&self) -> String {
-        match self.duration {
-            Some(mins) if mins > 0 => format!("{mins}m"),
-            _ => String::new(),
+    pub fn timed(&self) -> Option<f64> {
+        if self.is_all_day || (self.is_in_inbox && self.day.is_none()) {
+            return None;
         }
+        self.start_time
     }
-}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TaskRef {
-    pub id: Option<String>,
-    pub recurring_id: Option<String>,
-    pub day: Option<String>,
-}
+    pub fn minutes(&self) -> i64 {
+        self.duration.unwrap_or(0).max(0)
+    }
 
-impl Task {
+    pub fn end(&self) -> Option<f64> {
+        self.timed()
+            .map(|start| start + self.minutes() as f64 / 60.0)
+    }
+
+    pub fn subtask_progress(&self) -> Option<(usize, usize)> {
+        if self.subtasks.is_empty() {
+            return None;
+        }
+        let done = self.subtasks.iter().filter(|sub| sub.done()).count();
+        Some((done, self.subtasks.len()))
+    }
+
+    /// Recurring occurrences must be addressed by recurring_id + day, never by their occurrence id.
     pub fn task_ref(&self) -> Result<TaskRef> {
-        if let Some(recurring_id) = self.recurring_id.clone().filter(|id| !id.is_empty()) {
-            let day = self
-                .day
-                .clone()
-                .filter(|day| !day.is_empty())
-                .ok_or_else(|| Error::Usage("recurring task needs a day".into()))?;
-            return Ok(TaskRef {
-                id: None,
-                recurring_id: Some(recurring_id),
-                day: Some(day),
-            });
-        }
-        let id = self
-            .id
-            .clone()
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| Error::Api("task has no id".into()))?;
-        Ok(TaskRef {
-            id: Some(id),
-            recurring_id: None,
-            day: None,
-        })
-    }
-}
-
-pub fn parse_ref(id: &str, day: Option<String>) -> TaskRef {
-    match day {
-        Some(day) => TaskRef {
-            id: None,
-            recurring_id: Some(id.to_owned()),
-            day: Some(day),
-        },
-        None => TaskRef {
-            id: Some(id.to_owned()),
-            recurring_id: None,
-            day: None,
-        },
-    }
-}
-
-pub fn clock(hours: f64) -> String {
-    let hour = hours.floor() as i64;
-    let minute = ((hours - hour as f64) * 60.0).round() as i64;
-    let (hour, minute) = if minute == 60 {
-        (hour + 1, 0)
-    } else {
-        (hour, minute)
-    };
-    format!("{hour:02}:{minute:02}")
-}
-
-pub fn parse_clock(text: &str) -> Result<f64> {
-    if let Ok(value) = text.parse::<f64>() {
-        if (0.0..24.0).contains(&value) {
-            return Ok(value);
+        let id = self.id.as_deref().filter(|id| !id.is_empty());
+        let recurring_id = self.recurring_id.as_deref().filter(|id| !id.is_empty());
+        let day = self.day.as_deref().filter(|day| !day.is_empty());
+        match (id, recurring_id, day) {
+            (Some(id), _, _) if !self.is_recurring || recurring_id.is_none() => {
+                Ok(TaskRef::Id(id.to_owned()))
+            }
+            (_, Some(recurring_id), Some(day)) => Ok(TaskRef::Occurrence {
+                recurring_id: recurring_id.to_owned(),
+                day: day.to_owned(),
+            }),
+            (_, Some(_), None) => Err(Error::usage("recurring task needs a day")),
+            _ => Err(Error::Api("task has no id yet".into())),
         }
     }
-    let (hour, minute) = text
-        .split_once(':')
-        .ok_or_else(|| Error::Usage(format!("time must be HH:MM, got {text}")))?;
-    let hour: f64 = hour
-        .parse()
-        .map_err(|_| Error::Usage(format!("time must be HH:MM, got {text}")))?;
-    let minute: f64 = minute
-        .parse()
-        .map_err(|_| Error::Usage(format!("time must be HH:MM, got {text}")))?;
-    if !(0.0..24.0).contains(&hour) || !(0.0..60.0).contains(&minute) {
-        return Err(Error::Usage(format!("time must be HH:MM, got {text}")));
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TaskRef {
+    Id(String),
+    Occurrence { recurring_id: String, day: String },
+}
+
+impl TaskRef {
+    /// `RECURRING_ID@YYYY-MM-DD` names one occurrence; `--day` keeps the older two-argument form working.
+    pub fn parse(text: &str, day: Option<&str>) -> Result<Self> {
+        let text = text.trim();
+        let (id, inline_day) = match text.split_once('@') {
+            Some((id, day)) => (id, Some(day)),
+            None => (text, None),
+        };
+        if id.is_empty() {
+            return Err(Error::usage("task ref is empty"));
+        }
+        match inline_day.or(day) {
+            Some(day) => {
+                let day = clock::parse_stamp(day).ok_or_else(|| {
+                    Error::usage(format!("occurrence day must be YYYY-MM-DD, got {day}"))
+                })?;
+                Ok(Self::Occurrence {
+                    recurring_id: id.to_owned(),
+                    day: clock::stamp(day),
+                })
+            }
+            None => Ok(Self::Id(id.to_owned())),
+        }
     }
-    Ok(hour + minute / 60.0)
+
+    pub fn is_occurrence(&self) -> bool {
+        matches!(self, Self::Occurrence { .. })
+    }
+
+    /// The `scope` a write on this ref reports when it cannot reach the whole series.
+    pub fn scope(&self) -> &'static str {
+        if self.is_occurrence() { "day" } else { "task" }
+    }
+}
+
+impl fmt::Display for TaskRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Id(id) => f.write_str(id),
+            Self::Occurrence { recurring_id, day } => write!(f, "{recurring_id}@{day}"),
+        }
+    }
 }
 
 pub fn tasks_from_tool(result: &Value) -> Result<Vec<Task>> {
@@ -142,28 +181,26 @@ pub fn tasks_from_tool(result: &Value) -> Result<Vec<Task>> {
     {
         return Err(Error::Api(tool_text(result)));
     }
-    if let Some(value) = result.get("structuredContent").filter(|v| !v.is_null()) {
-        if let Some(tasks) = tasks_from_value(value) {
-            return Ok(tasks);
-        }
+    let structured = result.get("structuredContent").filter(|v| !v.is_null());
+    if let Some(tasks) = structured.and_then(tasks_from_value) {
+        return Ok(tasks);
     }
     let text = tool_text(result);
     let value = extract_json(&text)?;
     tasks_from_value(&value).ok_or_else(|| Error::Api(text))
 }
 
-fn tasks_from_value(value: &Value) -> Option<Vec<Task>> {
-    if let Some(list) = value.as_array() {
-        return serde_json::from_value(Value::Array(list.clone())).ok();
+pub fn tasks_from_value(value: &Value) -> Option<Vec<Task>> {
+    let list = value.as_array().or_else(|| {
+        ["tasks", "items", "inbox", "results", "data"]
+            .iter()
+            .find_map(|key| value.get(key).and_then(Value::as_array))
+    })?;
+    let mut tasks: Vec<Task> = serde_json::from_value(Value::Array(list.clone())).ok()?;
+    for task in &mut tasks {
+        task.is_completed = task.done();
     }
-    for key in ["tasks", "items", "inbox", "results", "data"] {
-        if let Some(list) = value.get(key).and_then(Value::as_array) {
-            if let Ok(tasks) = serde_json::from_value(Value::Array(list.clone())) {
-                return Some(tasks);
-            }
-        }
-    }
-    None
+    Some(tasks)
 }
 
 pub fn tool_text(result: &Value) -> String {
@@ -192,59 +229,59 @@ pub fn timezone() -> String {
     iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into())
 }
 
-pub fn today() -> String {
-    chrono::Local::now().format("%Y-%m-%d").to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn formats_half_hours() {
-        assert_eq!(clock(8.5), "08:30");
-        assert_eq!(clock(14.0), "14:00");
-        assert_eq!(parse_clock("08:30").unwrap(), 8.5);
-    }
-
-    #[test]
-    fn parses_wrapped_task_list() {
+    fn parses_wrapped_task_list_with_subtasks() {
         let raw = r#"Tasks for today:
-[{"id":"abc","title":"Standup","start_time":9.0,"duration":30}]"#;
-        let value = extract_json(raw).unwrap();
-        let tasks = tasks_from_value(&value).unwrap();
-        assert_eq!(tasks[0].title, "Standup");
-        assert_eq!(tasks[0].when(), "09:00");
+[{"id":"abc","title":"Standup","start_time":9.0,"duration":30,"completed_at":"2026-10-23T01:00:00Z",
+  "subtasks":[{"id":"s1","title":"notes","completed_at":null}],"order_index":3}]"#;
+        let tasks = tasks_from_value(&extract_json(raw).unwrap()).unwrap();
+        assert_eq!(tasks[0].timed(), Some(9.0));
+        assert!(tasks[0].is_completed);
+        assert_eq!(tasks[0].subtask_progress(), Some((0, 1)));
+        assert_eq!(tasks[0].extra["order_index"], 3);
+        let null_subtasks = r#"[{"id":"a","title":"x","subtasks":null}]"#;
+        assert!(
+            tasks_from_value(&extract_json(null_subtasks).unwrap()).unwrap()[0]
+                .subtasks
+                .is_empty()
+        );
     }
 
     #[test]
-    fn recurring_ref_needs_a_day() {
+    fn recurring_occurrence_uses_recurring_id_and_day() {
         let task = Task {
-            id: None,
+            id: Some("occurrence".into()),
             recurring_id: Some("rid".into()),
-            title: "Rise".into(),
-            note: String::new(),
             day: Some("2026-10-23".into()),
-            start_time: None,
-            duration: None,
-            is_all_day: true,
-            is_in_inbox: false,
-            is_completed: false,
-            is_recurring: false,
-            completed_at: None,
-            symbol: None,
-            color: None,
-            energy_level: None,
+            is_recurring: true,
+            ..Task::default()
         };
         let task_ref = task.task_ref().unwrap();
-        assert_eq!(task_ref.recurring_id.as_deref(), Some("rid"));
-        assert_eq!(task_ref.day.as_deref(), Some("2026-10-23"));
-        assert!(task_ref.id.is_none());
+        assert_eq!(task_ref.to_string(), "rid@2026-10-23");
+        let plain = Task {
+            id: Some("abc".into()),
+            ..Task::default()
+        };
+        assert_eq!(plain.task_ref().unwrap(), TaskRef::Id("abc".into()));
+    }
 
-        let mut both = task;
-        both.id = Some("abc".into());
-        let task_ref = both.task_ref().unwrap();
-        assert!(task_ref.id.is_none());
-        assert_eq!(task_ref.recurring_id.as_deref(), Some("rid"));
+    #[test]
+    fn parses_refs() {
+        assert_eq!(
+            TaskRef::parse("abc", None).unwrap(),
+            TaskRef::Id("abc".into())
+        );
+        let occurrence = TaskRef::parse("rid@2026-10-23", None).unwrap();
+        assert_eq!(
+            occurrence,
+            TaskRef::parse("rid", Some("2026-10-23")).unwrap()
+        );
+        assert!(occurrence.is_occurrence());
+        assert!(TaskRef::parse("rid@soon", None).is_err());
+        assert!(TaskRef::parse("", None).is_err());
     }
 }
