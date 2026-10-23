@@ -22,6 +22,7 @@ pub struct Patch {
     pub duration: Option<i64>,
     pub all_day: Option<bool>,
     pub inbox: bool,
+    pub new_day: Option<String>,
 }
 
 pub fn account(session: &mut Session) -> Result<Value> {
@@ -75,16 +76,21 @@ pub fn add(session: &mut Session, draft: NewTask) -> Result<Value> {
     if let Some(duration) = draft.duration {
         args["duration"] = json!(duration);
     }
-    session.call("create_task", args)
+    ensure_ok(session.call("create_task", args)?)
 }
 
 pub fn set_completed(session: &mut Session, task: &TaskRef, completed: bool) -> Result<Value> {
-    if completed {
-        return session.call("complete_task", ident(task)?);
-    }
-    let mut args = ident(task)?;
-    args["is_completed"] = json!(false);
-    session.call("update_task", args)
+    let value = if completed {
+        session.call("complete_task", ident(task)?)?
+    } else {
+        let mut args = ident(task)?;
+        args["is_completed"] = json!(false);
+        if args.get("recurring_id").is_some() {
+            args["update_action"] = json!("only_this");
+        }
+        session.call("update_task", args)?
+    };
+    ensure_ok(value)
 }
 
 pub fn edit(session: &mut Session, task: &TaskRef, patch: Patch) -> Result<Value> {
@@ -107,6 +113,9 @@ pub fn edit(session: &mut Session, task: &TaskRef, patch: Patch) -> Result<Value
     if let Some(all_day) = patch.all_day {
         args["is_all_day"] = json!(all_day);
     }
+    if let Some(new_day) = patch.new_day {
+        args["new_day"] = json!(new_day);
+    }
     if patch.inbox {
         args["is_in_inbox"] = json!(true);
     }
@@ -114,7 +123,10 @@ pub fn edit(session: &mut Session, task: &TaskRef, patch: Patch) -> Result<Value
     if fields == 1 || (args.get("recurring_id").is_some() && fields == 2) {
         return Err(Error::Usage("edit needs at least one change".into()));
     }
-    session.call("update_task", args)
+    if args.get("recurring_id").is_some() {
+        args["update_action"] = json!("only_this");
+    }
+    ensure_ok(session.call("update_task", args)?)
 }
 
 pub fn delete(session: &mut Session, task: &TaskRef) -> Result<Value> {
@@ -122,7 +134,23 @@ pub fn delete(session: &mut Session, task: &TaskRef) -> Result<Value> {
     if args.get("recurring_id").is_some() {
         args["delete_scope"] = json!("this");
     }
-    session.call("delete_task", args)
+    ensure_ok(session.call("delete_task", args)?)
+}
+
+fn ensure_ok(value: Value) -> Result<Value> {
+    if value
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let message = model::tool_text(&value);
+        return Err(Error::Api(if message.is_empty() {
+            "request failed".into()
+        } else {
+            message
+        }));
+    }
+    Ok(value)
 }
 
 fn ident(task: &TaskRef) -> Result<Value> {

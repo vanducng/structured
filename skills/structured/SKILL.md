@@ -82,4 +82,4 @@ structured delete TASK_ID --yes --json
 
 ## TUI
 
-A person runs `structured` in a terminal to open the task manager. `structured tui` does the same. Do not launch the TUI from an agent shell. Keys: `j`/`k`, `gg`/`G`, `h`/`l`, `[`/`]`, `x` or space to tick, `a` add, `e` edit title, `d` then `y` delete, `r` refresh, `q` quit.
+A person runs `structured` in a terminal to open the task manager. `structured tui` does the same. Do not launch the TUI from an agent shell. Keys: `j`/`k`, `gg`/`G`, `t` today, `i` inbox, `tab` or `h`/`l` switch pane, `[`/`]` change day, `/` or `f` find, `f` again jumps to the next match or closes an empty find, arrows move while find is open, `x` or space toggles the box, `a` add, `e` edit title, `D` date, `T` time, `m` duration in minutes, `,`/`.` move the task one day, `ctrl-g` edit the note in `$EDITOR`, `d` then `y` delete, `r` refresh, `q` quit. Tick, delete, and pane switches update the screen immediately and sync in the background.

@@ -22,8 +22,12 @@ pub struct Task {
     pub is_in_inbox: bool,
     #[serde(default)]
     pub is_completed: bool,
+    #[serde(default)]
+    pub is_recurring: bool,
     pub completed_at: Option<String>,
     pub symbol: Option<String>,
+    pub color: Option<String>,
+    pub energy_level: Option<i64>,
 }
 
 impl Task {
@@ -226,8 +230,11 @@ mod tests {
             is_all_day: true,
             is_in_inbox: false,
             is_completed: false,
+            is_recurring: false,
             completed_at: None,
             symbol: None,
+            color: None,
+            energy_level: None,
         };
         let task_ref = task.task_ref().unwrap();
         assert_eq!(task_ref.recurring_id.as_deref(), Some("rid"));

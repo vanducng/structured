@@ -63,18 +63,35 @@ structured completions fish
 j/k        move
 gg / G     top / bottom
 ctrl-d/u   page
-h/l, tab   Today and Inbox
+t / i      Today and Inbox
+h/l, tab   switch the two
 [ ]        previous / next day
-x, space   tick or untick
+/ or f     find. f again jumps to the next match, or closes an empty find
+x, space   toggle the box
 a          add
 e          edit the title
+D          edit the date
+T          edit the time
+m          edit the duration in minutes
+, .        move the task one day back or forward
+ctrl-g     edit the note in $EDITOR
 d, then y  delete
+ctrl-y/e   scroll the detail
 r          refresh
 ?          help
 q          quit
 ```
 
-The list refreshes about every 20 seconds.
+Tick, delete, title edits, and switching Today or Inbox paint immediately. The save runs in the background. Today and Inbox stay cached, so the next switch is immediate. A refresh still runs about every 20 seconds, and when you press `r`.
+
+`~/.config/structured/config.toml` (or `$XDG_CONFIG_HOME/structured/config.toml`):
+
+```toml
+layout = "side"
+detail_percent = 46
+```
+
+`layout` is `side` or `stack`. `detail_percent` is clamped to 30..=70. Side by side is used when the terminal is at least 72 columns.
 
 ## Development
 
@@ -85,6 +102,8 @@ cargo test
 ```
 
 Rust 1.85 or newer. The lockfile is committed.
+
+`src/lib.rs` is the CLI. `src/tui/` is the terminal UI: `app` holds the list and the cache, `worker` talks to Structured, and `view` draws.
 
 ## License
 
