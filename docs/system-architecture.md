@@ -14,6 +14,7 @@ Open [architecture.html](assets/architecture.html) for the interactive version w
 | CLI surface | `src/cli.rs` | Commands, flags, and help text. This is the contract agents read. |
 | Dispatch | `src/lib.rs` | Loads config, sets the time zone, runs one command, or opens the TUI |
 | Checklist commands | `src/subtask.rs` | `subtask list/add/done/undo/edit/delete` |
+| Self-update | `src/update.rs`, `install.sh` | `structured update` fetches `install.sh` and runs it against its own directory |
 | API layer | `src/api.rs` | One function per Structured tool. Builds arguments, enforces `--scope` on recurring days, merges three days for `now` |
 | MCP client | `src/mcp.rs` | JSON-RPC over HTTP. Initializes once per session, sends `Mcp-Session-Id` when the server issues one, and short-circuits writes under `--dry-run` |
 | Sign-in | `src/auth.rs` | OAuth with PKCE, dynamic client registration, a loopback redirect on `127.0.0.1:8734`, token refresh, and `auth.json` at mode 600 |

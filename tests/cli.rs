@@ -571,3 +571,15 @@ fn a_recurring_time_edit_in_another_zone_is_said_in_the_tasks_own_zone() {
     assert_eq!(args["day"], "2026-10-24");
     assert!(args.get("timezone").is_none());
 }
+
+#[test]
+fn update_dry_run_names_the_installer_and_the_binarys_directory() {
+    let output = bin()
+        .args(["update", "--dry-run", "--json"])
+        .output()
+        .unwrap();
+    let plan = &stdout_json(&output)["result"];
+    assert_eq!(plan["dry_run"], true);
+    assert!(plan["installer"].as_str().unwrap().ends_with("/install.sh"));
+    assert_eq!(plan["version"], env!("CARGO_PKG_VERSION"));
+}

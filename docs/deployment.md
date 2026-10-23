@@ -35,10 +35,17 @@ gh workflow run release --repo vanducng/structured -f tag=v0.2.0
 
 ## Install or upgrade
 
-The [README](../README.md#install) has the download and checksum steps. Upgrading is the same steps with the newer tag.
+`install.sh` at the repo root is the installer, and `structured update` runs it against the directory the binary lives in:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vanducng/structured/main/install.sh | sh
+structured update
+```
+
+It maps the machine to a release target, downloads that archive and `SHA256SUMS` from the release, refuses a checksum mismatch, and replaces the binary in one `mv`. It does nothing when that version is already installed. `STRUCTURED_INSTALL_DIR` changes the directory (default `~/.local/bin`). `STRUCTURED_VERSION=vX.Y.Z` installs a given release; releases before v0.3.0 have no `SHA256SUMS`, so the script refuses them.
 
 ## Roll back
 
-Install the previous release's archive the same way, naming its tag instead of the latest. To pull a bad release, mark it as a pre-release or delete it in GitHub, then ship the fix as a new `fix` commit so release-please cuts the next patch.
+Install the previous release with `curl -fsSL https://raw.githubusercontent.com/vanducng/structured/main/install.sh | STRUCTURED_VERSION=v0.3.0 sh`, naming its tag. To pull a bad release, mark it as a pre-release or delete it in GitHub, then ship the fix as a new `fix` commit so release-please cuts the next patch.
 
 Signing in again is never part of a rollback: `auth.json` and `config.toml` stay where they are across versions.
