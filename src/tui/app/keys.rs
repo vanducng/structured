@@ -308,12 +308,19 @@ fn edit_note(
     suspend(terminal)?;
     let edited = run_editor(&path);
     restore(terminal)?;
-    let note = std::fs::read_to_string(&path).unwrap_or_default();
+    let read = std::fs::read_to_string(&path);
     let _ = std::fs::remove_file(&path);
     if !edited? {
         app.status = "editor closed".into();
         return Ok(());
     }
+    let note = match read {
+        Ok(note) => note,
+        Err(_) => {
+            app.status = "could not read the note".into();
+            return Ok(());
+        }
+    };
     let next = note.trim_end_matches('\n').to_owned();
     let prev = previous.trim_end_matches('\n');
     if next == prev {

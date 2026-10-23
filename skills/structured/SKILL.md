@@ -75,7 +75,7 @@ structured delete TASK_ID --yes --json
 - No day, or `--inbox`, creates an inbox task.
 - A day without `--time` is all-day. `--time` is `HH:MM`. Duration is minutes.
 - `delete` refuses to run without `--yes`.
-- For a recurring id, pass `--day`. `delete` then removes that day only.
+- For a recurring id, pass `--day`. `delete` and `--move-day` change that day only. Any other edit applies to the series.
 - Deleting a calendar-imported task hides it in Structured. It does not delete the event from the external calendar.
 - The default symbol is `text.badge.checkmark`. Override with `--symbol` when the user names one.
 - This CLI does not create recurring series.

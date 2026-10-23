@@ -85,24 +85,23 @@ pub fn set_completed(session: &mut Session, task: &TaskRef, completed: bool) -> 
     } else {
         let mut args = ident(task)?;
         args["is_completed"] = json!(false);
-        if args.get("recurring_id").is_some() {
-            args["update_action"] = json!("only_this");
-        }
         session.call("update_task", args)?
     };
     ensure_ok(value)
 }
 
 pub fn edit(session: &mut Session, task: &TaskRef, patch: Patch) -> Result<Value> {
+    ensure_ok(session.call("update_task", edit_args(task, patch)?)?)
+}
+
+fn edit_args(task: &TaskRef, patch: Patch) -> Result<Value> {
     let mut args = ident(task)?;
+    let recurring = args.get("recurring_id").is_some();
     if let Some(title) = patch.title {
         args["title"] = json!(title);
     }
     if let Some(note) = patch.note {
         args["note"] = json!(note);
-    }
-    if let Some(day) = patch.day {
-        args["day"] = json!(day);
     }
     if let Some(start) = patch.start_time {
         args["start_time"] = json!(start);
@@ -113,20 +112,29 @@ pub fn edit(session: &mut Session, task: &TaskRef, patch: Patch) -> Result<Value
     if let Some(all_day) = patch.all_day {
         args["is_all_day"] = json!(all_day);
     }
-    if let Some(new_day) = patch.new_day {
-        args["new_day"] = json!(new_day);
-    }
     if patch.inbox {
         args["is_in_inbox"] = json!(true);
     }
+    if recurring {
+        if let Some(new_day) = patch.new_day.or(patch.day) {
+            args["new_day"] = json!(new_day);
+        }
+    } else if let Some(day) = patch.day {
+        args["day"] = json!(day);
+    }
     let fields = args.as_object().map(serde_json::Map::len).unwrap_or(0);
-    if fields == 1 || (args.get("recurring_id").is_some() && fields == 2) {
+    if fields == 1 || (recurring && fields == 2) {
         return Err(Error::Usage("edit needs at least one change".into()));
     }
-    if args.get("recurring_id").is_some() {
-        args["update_action"] = json!("only_this");
+    if recurring {
+        let action = if args.get("new_day").is_some() {
+            "only_this"
+        } else {
+            "all"
+        };
+        args["update_action"] = json!(action);
     }
-    ensure_ok(session.call("update_task", args)?)
+    Ok(args)
 }
 
 pub fn delete(session: &mut Session, task: &TaskRef) -> Result<Value> {
@@ -166,4 +174,50 @@ fn ident(task: &TaskRef) -> Result<Value> {
         .as_deref()
         .ok_or_else(|| Error::Usage("recurring task needs --day YYYY-MM-DD".into()))?;
     Ok(json!({"recurring_id": recurring_id, "day": day}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blank() -> Patch {
+        Patch {
+            title: None,
+            note: None,
+            day: None,
+            start_time: None,
+            duration: None,
+            all_day: None,
+            inbox: false,
+            new_day: None,
+        }
+    }
+
+    fn recurring() -> TaskRef {
+        TaskRef {
+            id: None,
+            recurring_id: Some("rid".into()),
+            day: Some("2026-10-24".into()),
+        }
+    }
+
+    #[test]
+    fn series_edit_does_not_detach() {
+        let mut patch = blank();
+        patch.title = Some("Standup".into());
+        let args = edit_args(&recurring(), patch).unwrap();
+        assert_eq!(args["update_action"].as_str(), Some("all"));
+        assert_eq!(args["day"].as_str(), Some("2026-10-24"));
+        assert!(args.get("new_day").is_none());
+    }
+
+    #[test]
+    fn one_day_move_stays_on_that_occurrence() {
+        let mut patch = blank();
+        patch.day = Some("2026-10-25".into());
+        let args = edit_args(&recurring(), patch).unwrap();
+        assert_eq!(args["update_action"].as_str(), Some("only_this"));
+        assert_eq!(args["day"].as_str(), Some("2026-10-24"));
+        assert_eq!(args["new_day"].as_str(), Some("2026-10-25"));
+    }
 }

@@ -62,27 +62,27 @@ pub struct TaskRef {
 
 impl Task {
     pub fn task_ref(&self) -> Result<TaskRef> {
-        if let Some(id) = self.id.clone().filter(|id| !id.is_empty()) {
+        if let Some(recurring_id) = self.recurring_id.clone().filter(|id| !id.is_empty()) {
+            let day = self
+                .day
+                .clone()
+                .filter(|day| !day.is_empty())
+                .ok_or_else(|| Error::Usage("recurring task needs a day".into()))?;
             return Ok(TaskRef {
-                id: Some(id),
-                recurring_id: None,
-                day: None,
+                id: None,
+                recurring_id: Some(recurring_id),
+                day: Some(day),
             });
         }
-        let recurring_id = self
-            .recurring_id
+        let id = self
+            .id
             .clone()
             .filter(|id| !id.is_empty())
             .ok_or_else(|| Error::Api("task has no id".into()))?;
-        let day = self
-            .day
-            .clone()
-            .filter(|day| !day.is_empty())
-            .ok_or_else(|| Error::Usage("recurring task needs a day".into()))?;
         Ok(TaskRef {
-            id: None,
-            recurring_id: Some(recurring_id),
-            day: Some(day),
+            id: Some(id),
+            recurring_id: None,
+            day: None,
         })
     }
 }
@@ -239,5 +239,12 @@ mod tests {
         let task_ref = task.task_ref().unwrap();
         assert_eq!(task_ref.recurring_id.as_deref(), Some("rid"));
         assert_eq!(task_ref.day.as_deref(), Some("2026-10-23"));
+        assert!(task_ref.id.is_none());
+
+        let mut both = task;
+        both.id = Some("abc".into());
+        let task_ref = both.task_ref().unwrap();
+        assert!(task_ref.id.is_none());
+        assert_eq!(task_ref.recurring_id.as_deref(), Some("rid"));
     }
 }

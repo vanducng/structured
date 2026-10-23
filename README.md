@@ -47,7 +47,7 @@ structured completions zsh
 
 A task with no day goes to the inbox. A day without `--time` is all-day. `--time` is `HH:MM`.
 
-Recurring tasks use the recurring id plus `--day YYYY-MM-DD`. `delete` of a recurring task removes that day only. Deleting a calendar-imported task hides it in Structured. It does not remove the event from the external calendar.
+Recurring tasks use the recurring id plus `--day YYYY-MM-DD`. `delete` and `--move-day` change that day only. Any other edit applies to the series. Deleting a calendar-imported task hides it in Structured. It does not remove the event from the external calendar.
 
 Shell completions:
 
