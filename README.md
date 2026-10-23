@@ -6,6 +6,10 @@ This project is not affiliated with Structured, unorderly, or Leo Mehlig.
 
 `structured` is a CLI for scripts and agents, and a vim-style TUI for a person. Both talk to Structured Cloud. A terminal with no subcommand opens the TUI. A pipe with no subcommand prints help and exits 2.
 
+[![structured demo: text timeline, refs, subtasks, recurring scope, dry run, and the TUI](https://asciinema.org/a/x3Az7oaRX9Bm2jen.svg)](https://asciinema.org/a/x3Az7oaRX9Bm2jen)
+
+The demo runs on generic sample tasks: the text timeline, refs and subtasks from the CLI, the scope check on a recurring day, `--dry-run`, then the TUI checklist, search, scope-aware prompts, help, inbox, and the next day.
+
 ## Install
 
 Download the archive for your machine from the [latest release](https://github.com/vanducng/structured/releases/latest), check it against `SHA256SUMS`, and put `structured` on `PATH`. Archives exist for `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`. Upgrading is the same steps.
