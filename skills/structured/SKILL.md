@@ -75,11 +75,11 @@ structured delete TASK_ID --yes --json
 - No day, or `--inbox`, creates an inbox task.
 - A day without `--time` is all-day. `--time` is `HH:MM`. Duration is minutes.
 - `delete` refuses to run without `--yes`.
-- For a recurring id, pass `--day`. `delete` then removes that day only.
+- For a recurring id, pass `--day`. `delete` and `--move-day` change that day only. Any other edit applies to the series.
 - Deleting a calendar-imported task hides it in Structured. It does not delete the event from the external calendar.
 - The default symbol is `text.badge.checkmark`. Override with `--symbol` when the user names one.
 - This CLI does not create recurring series.
 
 ## TUI
 
-A person runs `structured` in a terminal to open the task manager. `structured tui` does the same. Do not launch the TUI from an agent shell. Keys: `j`/`k`, `gg`/`G`, `h`/`l`, `[`/`]`, `x` or space to tick, `a` add, `e` edit title, `d` then `y` delete, `r` refresh, `q` quit.
+A person runs `structured` in a terminal to open the task manager. `structured tui` does the same. Do not launch the TUI from an agent shell. Keys: `j`/`k`, `gg`/`G`, `t` today, `i` inbox, `tab` or `h`/`l` switch pane, `[`/`]` change day, `/` or `f` find, `f` again jumps to the next match or closes an empty find, arrows move while find is open, `x` or space toggles the box, `a` add, `e` edit title, `D` date, `T` time, `m` duration in minutes, `,`/`.` move the task one day, `ctrl-g` edit the note in `$EDITOR`, `d` then `y` delete, `r` refresh, `q` quit. Tick, delete, and pane switches update the screen immediately and sync in the background.

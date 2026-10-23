@@ -3,6 +3,7 @@
 mod api;
 mod auth;
 mod cli;
+mod config;
 mod error;
 mod mcp;
 mod model;
@@ -141,6 +142,7 @@ pub fn execute(cli: &Cli) -> Result<()> {
                     duration: *duration,
                     all_day: if *all_day { Some(true) } else { None },
                     inbox: *inbox,
+                    new_day: None,
                 },
             )?;
             output::value(wants_json(cli), "updated", result)?;
