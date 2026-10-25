@@ -291,3 +291,80 @@ fn a_long_subtask_wraps_and_arrows_walk_its_rows() {
     press(&mut app, &tx, KeyCode::Up);
     assert_eq!(at(&app).0, Field::Title);
 }
+
+#[test]
+fn the_list_highlight_stays_on_the_edited_task() {
+    let today = crate::clock::stamp(crate::clock::today());
+    let dated = |title: &str, start: Option<f64>| Task {
+        id: Some(title.into()),
+        title: title.into(),
+        day: Some(today.clone()),
+        start_time: start,
+        ..Task::default()
+    };
+    let mut app = App::new(UiConfig::default());
+    app.tasks = vec![
+        dated("a", None),
+        dated("b", Some(9.0)),
+        dated("c", Some(10.0)),
+    ];
+    app.loaded = true;
+    app.queue_add("new".into());
+    let b = app
+        .visible()
+        .iter()
+        .position(|task| task.title == "b")
+        .unwrap();
+    app.select(b);
+    app.open_card(Field::Title);
+    app.apply_reply(Reply::WriteFailed {
+        message: "HTTP 500".into(),
+    });
+    assert_eq!(app.visible()[app.selected].title, "b");
+}
+
+#[test]
+fn a_draft_row_stays_under_its_row_when_an_earlier_add_is_undone() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = parent(&["X", "Z", "W"], "");
+    for (sub, id) in app.tasks[0].subtasks.iter_mut().zip(["x", "z", "w"]) {
+        sub.id = Some(id.into());
+    }
+    app.open_card(Field::Subtask(0));
+    press(&mut app, &tx, KeyCode::Enter);
+    typed(&mut app, &tx, "A");
+    press(&mut app, &tx, KeyCode::Enter);
+    press(&mut app, &tx, KeyCode::Down);
+    press(&mut app, &tx, KeyCode::Enter);
+    typed(&mut app, &tx, "B");
+    app.apply_reply(Reply::WriteFailed {
+        message: "HTTP 500".into(),
+    });
+    press(&mut app, &tx, KeyCode::Esc);
+    let titles: Vec<_> = app.tasks[0]
+        .subtasks
+        .iter()
+        .map(|sub| sub.title.as_str())
+        .collect();
+    assert_eq!(titles, ["X", "Z", "B", "W"]);
+}
+
+#[test]
+fn a_row_that_comes_back_with_a_new_id_is_found_by_title() {
+    let mut app = parent(&["X", "Z"], "");
+    for (sub, id) in app.tasks[0].subtasks.iter_mut().zip(["x", "z"]) {
+        sub.id = Some(id.into());
+    }
+    app.open_card(Field::Subtask(1));
+    let mut reloaded = app.tasks[0].clone();
+    for (sub, id) in reloaded.subtasks.iter_mut().zip(["x2", "z2"]) {
+        sub.id = Some(id.into());
+    }
+    app.apply_reply(Reply::Loaded {
+        epoch: app.epoch,
+        key: CacheKey::Today,
+        show: true,
+        tasks: vec![reloaded],
+    });
+    assert_eq!(at(&app), (Field::Subtask(1), "Z".into(), 1));
+}

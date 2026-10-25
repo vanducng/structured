@@ -42,7 +42,8 @@ pub(in crate::tui) struct Card {
     pub(in crate::tui) input: Input,
     pub(super) original: String,
     pub(super) task_ref: TaskRef,
-    row_id: Option<String>,
+    /// The row being renamed, or the row above a draft row, found again after every reply.
+    anchor: Option<Subtask>,
 }
 
 impl App {
@@ -68,14 +69,19 @@ impl App {
             Field::NewSubtask(at) => Field::NewSubtask(at.min(count)),
             field => field,
         };
-        let (original, row_id) = match field {
-            Field::Title => (task.title.clone(), None),
-            Field::Subtask(pick) => {
-                let sub = &task.subtasks[pick];
-                (sub.title.clone(), sub.id.clone())
-            }
-            Field::NewSubtask(_) => (String::new(), None),
-            Field::Note => (task.note.trim_end_matches('\n').to_owned(), None),
+        let original = match field {
+            Field::Title => task.title.clone(),
+            Field::Subtask(pick) => task.subtasks[pick].title.clone(),
+            Field::NewSubtask(_) => String::new(),
+            Field::Note => task.note.trim_end_matches('\n').to_owned(),
+        };
+        let anchor = match field {
+            Field::Subtask(pick) => task.subtasks.get(pick).cloned(),
+            Field::NewSubtask(at) => at
+                .checked_sub(1)
+                .and_then(|above| task.subtasks.get(above))
+                .cloned(),
+            _ => None,
         };
         if let Field::Subtask(pick) = field {
             self.sub_selected = pick;
@@ -85,7 +91,7 @@ impl App {
             input: Input::new(original.clone()),
             original,
             task_ref,
-            row_id,
+            anchor,
         })
     }
 
@@ -115,12 +121,20 @@ impl App {
             return;
         };
         let subs = &task.subtasks;
-        let field = match card.field {
-            Field::Subtask(pick) => row_of(subs, pick, card.row_id.as_deref(), &card.original)
-                .map_or(Field::NewSubtask(pick.min(subs.len())), Field::Subtask),
-            Field::NewSubtask(at) => Field::NewSubtask(at.min(subs.len())),
-            field => field,
+        let near = match card.field {
+            Field::Subtask(pick) => pick,
+            Field::NewSubtask(at) => at.saturating_sub(1),
+            _ => 0,
         };
+        let found = card.anchor.as_ref().and_then(|row| row_of(subs, near, row));
+        let field = match (card.field, found) {
+            (Field::Subtask(_), Some(at)) => Field::Subtask(at),
+            (Field::Subtask(pick), None) => Field::NewSubtask(pick.min(subs.len())),
+            (Field::NewSubtask(_), Some(above)) => Field::NewSubtask(above + 1),
+            (Field::NewSubtask(at), None) => Field::NewSubtask(at.min(subs.len())),
+            (field, _) => field,
+        };
+        let task_ref = card.task_ref.clone();
         let gone = matches!(
             (card.field, field),
             (Field::Subtask(_), Field::NewSubtask(_))
@@ -130,7 +144,7 @@ impl App {
             card.field = field;
             if gone {
                 card.original.clear();
-                card.row_id = None;
+                card.anchor = None;
                 if !typed {
                     card.input = Input::default();
                 }
@@ -139,15 +153,22 @@ impl App {
         if gone && typed {
             self.say(Tone::Bad, "that subtask is gone, saving adds it back");
         }
+        self.follow(Some(&task_ref));
+        if let Field::Subtask(pick) = field {
+            self.sub_selected = pick;
+        }
     }
 }
 
-/// Finds the row by id once it has one, else by title nearest to where it was.
-fn row_of(subs: &[Subtask], pick: usize, id: Option<&str>, title: &str) -> Option<usize> {
-    match id {
-        Some(id) => subs.iter().position(|sub| sub.id.as_deref() == Some(id)),
-        None => (0..subs.len())
-            .filter(|&at| subs[at].title == title)
-            .min_by_key(|&at| at.abs_diff(pick)),
-    }
+/// Finds the row by id, else by title nearest to where it was: a row still saving has no id yet,
+/// and a day split off its series may come back with new ids.
+fn row_of(subs: &[Subtask], near: usize, row: &Subtask) -> Option<usize> {
+    row.id
+        .as_ref()
+        .and_then(|id| subs.iter().position(|sub| sub.id.as_ref() == Some(id)))
+        .or_else(|| {
+            (0..subs.len())
+                .filter(|&at| subs[at].title == row.title)
+                .min_by_key(|&at| at.abs_diff(near))
+        })
 }
