@@ -6,7 +6,7 @@
 
 - `edit-open` opens the card with `e` from the list. The pane title reads `Details · editing`, the border turns accent, a `›` marks the title, and the footer chip reads `TITLE`.
 - `edit-tab` moves between sections with `tab`: title, then the first subtask (or the `add a subtask…` row), then the note, then back to the title. `shift-tab` goes the other way.
-- `edit-rows` moves with `↑` `↓` across rows and sections. In the title and the note they walk the wrapped lines first.
+- `edit-rows` moves with `↑` `↓` across rows and sections. A long title, subtask, or note wraps while it is edited, and the arrows walk its wrapped lines first.
 - `edit-insert` opens a draft row below a subtask with Enter. Enter on the draft adds it there and opens the next one. Enter on an empty draft moves to the note. Backspace on an empty draft goes up.
 - `edit-note` types the note in place. Enter is a new line. `home` `end` `ctrl-u` `ctrl-k` stop at the line.
 - `edit-save` writes the field on `tab`, an arrow out of it, Enter, or `esc`. An unchanged field writes nothing.

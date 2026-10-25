@@ -74,7 +74,7 @@ On a recurring task the prompt says how far the edit reaches. A time or duration
 | Keys | Action |
 | --- | --- |
 | `tab`, `shift-tab` | next or previous section: title, subtasks, note |
-| `↑` `↓` | the row above or below, crossing into the next section at an edge. In the title and note they walk the wrapped lines |
+| `↑` `↓` | the row above or below, crossing into the next section at an edge. Long text wraps, and they walk its wrapped lines first |
 | `⏎` | title: on to the subtasks. Subtask: a new row below it. New row: add it and open the next, or on an empty row move to the note. Note: a new line |
 | `backspace` on an empty new row | drop it and go up |
 | `home` `end`, `ctrl-u` `ctrl-k` | in the note they stop at the current line |
