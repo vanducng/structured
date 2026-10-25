@@ -53,11 +53,11 @@ With `timezones` set in config.toml, the header ends with the clock in the zone 
 | `z` | next time zone |
 | `/` or `f` | find in titles, notes, and subtasks. `n` `N` step through matches, `esc` clears and keeps the highlighted task |
 | `x` or space | done or not |
-| `a`, `e`, `d` then `y` | add, edit the title, delete |
+| `a`, `e`, `d` then `y` | add, edit the title, subtasks, and note in place, delete |
 | `D`, `T`, `m`, `,` `.` | date, time, minutes, move one day |
-| `enter` or `l` | open the subtasks. Then `j` `k` move, `x` ticks, `a` adds, `e` renames, `d` deletes, `J` `K` reorder, `h` or `esc` goes back |
+| `enter` or `l` | open the subtasks. Then `j` `k` move, `x` ticks, `a` adds, `e` edits, `d` deletes, `J` `K` reorder, `h` or `esc` goes back |
 | `A` | add a subtask straight from the list |
-| `ctrl-g` | edit the note in `$VISUAL` or `$EDITOR` (falls back to `vi`) |
+| `ctrl-g` | edit the note in `$VISUAL` or `$EDITOR` (falls back to `vi`), from the list or while editing |
 | `J` `K` (or `ctrl-e` `ctrl-y`) | scroll the details of the selected task |
 | `r`, `?`, `q` or `ctrl-c` | refresh, help, quit |
 
@@ -65,9 +65,23 @@ With `timezones` set in config.toml, the header ends with the clock in the zone 
 
 Prompts are one line at the bottom with a real cursor. `←` `→`, `home` `end`, `ctrl-w`, and `ctrl-u` edit. `↑` `↓` step a date by a day and a time or duration by 15 minutes. A rejected value keeps the draft and says why. `esc` or `ctrl-c` cancels.
 
-A new subtask is typed in place in the checklist. `⏎` saves it and opens the next one, `esc` stops.
+On a recurring task the prompt says how far the edit reaches. A time or duration changes `every repeat`. A date or a move applies to `this day only`.
 
-On a recurring task the prompt says how far the edit reaches. A title, time, or duration changes `every repeat`. A date, a move, or a subtask change applies to `this day only`.
+## Editing a task
+
+`e` turns the details pane into an editable card: the title, each subtask, and the note are typed where they are drawn. `e` in the checklist starts on that subtask, and `a` or `A` on a new row at the end.
+
+| Keys | Action |
+| --- | --- |
+| `tab`, `shift-tab` | next or previous section: title, subtasks, note |
+| `↑` `↓` | the row above or below, crossing into the next section at an edge. In the title and note they walk the wrapped lines |
+| `⏎` | title: on to the subtasks. Subtask: a new row below it. New row: add it and open the next, or on an empty row move to the note. Note: a new line |
+| `backspace` on an empty new row | drop it and go up |
+| `home` `end`, `ctrl-u` `ctrl-k` | in the note they stop at the current line |
+| `ctrl-c` | put the field back as it was. On an untouched field it closes the card |
+| `esc` | save the field and close |
+
+Each field saves when the cursor leaves it, so a failed save costs one field, and a recurring task keeps its scopes: a title or note edit reaches `every repeat`, a subtask edit stays on `this day only`. The footer names the field and its reach. A field that cannot save, like an empty title, keeps its draft and says why.
 
 ## Saving
 

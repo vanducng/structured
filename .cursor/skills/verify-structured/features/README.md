@@ -39,3 +39,4 @@ Each feature file has an H1, one short paragraph, then these H2 sections in orde
 - [Schedule](./schedule.md) edits date, time, and duration. Enter writes. Escape does not.
 - [Complete and delete](./complete.md) toggles the box and deletes. Both write immediately.
 - [Subtasks](./subtasks.md) opens the checklist and ticks, adds, renames, and deletes subtasks.
+- [Edit card](./edit.md) edits the title, subtasks, and note in place from `e`. Each field writes when the cursor leaves it.
