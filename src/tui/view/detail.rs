@@ -6,22 +6,31 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::{fit, marked, pad, placeholder, wrap};
 use crate::clock;
-use crate::model::Task;
-use crate::tui::app::{App, Focus, Mode, Prompt};
+use crate::model::{Subtask, Task};
+use crate::tui::app::{App, Card, Field, Focus, Mode};
 use crate::tui::theme;
+use crate::tui::wrap::locate;
 
 const MARGIN: &str = "  ";
 const LABEL: usize = 10;
 
-/// Where the inline subtask draft sits, so the terminal cursor can be placed in it.
+/// Where the field being edited has its cursor, so the terminal cursor can be placed there.
 struct Draft {
     line: usize,
     column: usize,
 }
 
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    let focused =
-        app.focus == Focus::Subtasks && !matches!(app.mode, Mode::Help | Mode::Confirm(_));
+    let card = match &app.mode {
+        Mode::Card(card) => Some(card),
+        _ => None,
+    };
+    let focused = card.is_some()
+        || (app.focus == Focus::Subtasks && !matches!(app.mode, Mode::Help | Mode::Confirm(_)));
+    let mut title = vec![Span::styled(" Details ", theme::bold())];
+    if card.is_some() {
+        title.push(Span::styled("· editing ", Style::new().fg(theme::ACCENT)));
+    }
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(if focused {
@@ -29,7 +38,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             theme::BORDER
         }))
-        .title(Line::styled(" Details ", theme::bold()));
+        .title(Line::from(title));
     let inner = block.inner(area);
     let Some(task) = app.selected_task() else {
         frame.render_widget(block, area);
@@ -43,13 +52,16 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let total = inner.width as usize;
-    let mut lines = band(task, total);
+    app.detail_width.set(total);
+    let mut draft = None;
+    let title = card.filter(|card| card.field == Field::Title);
+    let mut lines = band(task, title, total, &mut draft);
     lines.push(Line::default());
     properties(&mut lines, task, total);
     lines.push(Line::default());
-    let (focus_line, draft) = subtasks(&mut lines, task, app, focused, total);
+    let selected = subtasks(&mut lines, task, app, card, total, &mut draft);
     lines.push(Line::default());
-    note(&mut lines, task, &app.query, total);
+    note(&mut lines, task, &app.query, card, total, &mut draft);
     if let Ok(task_ref) = task.task_ref() {
         lines.push(Line::default());
         let room = total.saturating_sub(2 * MARGIN.len());
@@ -65,7 +77,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     }
     let height = inner.height as usize;
     let mut scroll = app.detail_scroll as usize;
-    if let Some(line) = focus_line {
+    if let Some(line) = draft.as_ref().map(|draft| draft.line).or(selected) {
         if line >= scroll + height {
             scroll = line + 1 - height;
         } else if line < scroll {
@@ -89,17 +101,36 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn band(task: &Task, total: usize) -> Vec<Line<'static>> {
+fn band(
+    task: &Task,
+    editing: Option<&Card>,
+    total: usize,
+    draft: &mut Option<Draft>,
+) -> Vec<Line<'static>> {
     let base = theme::chip(theme::task_color(task.color.as_deref()));
-    let title = if task.done() {
+    let title = if task.done() && editing.is_none() {
         base.add_modifier(Modifier::CROSSED_OUT)
     } else {
         base
     };
     let blank = Line::styled(" ".repeat(total), base);
     let mut lines = vec![blank.clone()];
-    for text in wrap(&task.title, total.saturating_sub(4)) {
-        let mut spans = vec![Span::styled(MARGIN, base), Span::styled(text, title)];
+    let room = Field::Title.width(total);
+    let text = editing.map_or(task.title.as_str(), |card| card.input.value());
+    if let Some(card) = editing {
+        let (row, column) = locate(text, card.input.cursor(), room);
+        *draft = Some(Draft {
+            line: lines.len() + row,
+            column: MARGIN.len() + column,
+        });
+    }
+    for (row, text) in wrap(text, room).into_iter().enumerate() {
+        let lead = if editing.is_some() && row == 0 {
+            "› "
+        } else {
+            MARGIN
+        };
+        let mut spans = vec![Span::styled(lead, base), Span::styled(text, title)];
         pad(&mut spans, total);
         let last = spans.len() - 1;
         spans[last].style = base;
@@ -231,14 +262,19 @@ fn energy(level: i64) -> Vec<Span<'static>> {
     ]
 }
 
-/// Returns the line to keep on screen and, while a subtask is being typed, where its cursor goes.
+/// Returns the highlighted checklist row, so the pane can keep it on screen.
 fn subtasks(
     lines: &mut Vec<Line<'static>>,
     task: &Task,
     app: &App,
-    focused: bool,
+    card: Option<&Card>,
     total: usize,
-) -> (Option<usize>, Option<Draft>) {
+    draft: &mut Option<Draft>,
+) -> Option<usize> {
+    let focused = match card.map(|card| card.field) {
+        Some(field) => matches!(field, Field::Subtask(_) | Field::NewSubtask(_)),
+        None => app.focus == Focus::Subtasks && !matches!(app.mode, Mode::Help | Mode::Confirm(_)),
+    };
     let heading = if focused {
         Style::new().fg(theme::ACCENT)
     } else {
@@ -252,22 +288,21 @@ fn subtasks(
         head.push(Span::styled(format!("  {done}/{all}"), theme::muted()));
     }
     lines.push(Line::from(head));
-    let editing = match &app.mode {
-        Mode::Input { input, prompt } if prompt.inline() => Some((*prompt, input)),
-        _ => None,
-    };
-    let mut focus_line = None;
-    let mut draft = None;
+    let count = task.subtasks.len();
+    let mut selected = None;
     for (index, sub) in task.subtasks.iter().enumerate() {
-        let adding = matches!(editing, Some((Prompt::NewSubtask, _)));
-        let current = focused && index == app.sub_selected && !adding;
-        if let Some((Prompt::SubtaskTitle, input)) = editing
-            && current
+        if let Some(card) = card
+            && card.field == Field::NewSubtask(index)
         {
-            focus_line = Some(lines.len());
-            draft = Some(draft_row(lines, input, sub.done(), total));
+            *draft = Some(draft_row(lines, card, None, total));
+        }
+        if let Some(card) = card
+            && card.field == Field::Subtask(index)
+        {
+            *draft = Some(draft_row(lines, card, Some(sub), total));
             continue;
         }
+        let current = card.is_none() && focused && index == app.sub_selected;
         let mut spans = vec![
             Span::styled(
                 if current { "  › " } else { "    " },
@@ -295,71 +330,124 @@ fn subtasks(
                 .into_iter()
                 .map(|span| span.patch_style(Style::new().bg(theme::SELECTED)))
                 .collect();
-            focus_line = Some(lines.len());
+            selected = Some(lines.len());
         }
         lines.push(Line::from(spans));
     }
-    if let Some((Prompt::NewSubtask, input)) = editing {
-        focus_line = Some(lines.len());
-        draft = Some(draft_row(lines, input, false, total));
-    } else if task.subtasks.is_empty() {
-        let hint = if focused {
-            "No subtasks yet · a adds one"
-        } else {
-            "No subtasks · A adds one"
-        };
-        lines.push(Line::styled(format!("{MARGIN}{hint}"), theme::muted()));
+    match card {
+        Some(card) if card.field == Field::NewSubtask(count) => {
+            *draft = Some(draft_row(lines, card, None, total));
+        }
+        Some(card) if !matches!(card.field, Field::NewSubtask(_)) => lines.push(Line::from(vec![
+            Span::styled(format!("    {} ", theme::BOX), theme::muted()),
+            Span::styled("add a subtask…", theme::faint()),
+        ])),
+        Some(_) => {}
+        None if count == 0 => {
+            let hint = if focused {
+                "No subtasks yet · a adds one"
+            } else {
+                "No subtasks · A adds one"
+            };
+            lines.push(Line::styled(format!("{MARGIN}{hint}"), theme::muted()));
+        }
+        None => {}
     }
-    (focus_line, draft)
+    selected
 }
 
+/// The row being typed wraps like the title and note, so a long subtask is never cut off.
 fn draft_row(
     lines: &mut Vec<Line<'static>>,
-    input: &tui_input::Input,
-    done: bool,
+    card: &Card,
+    renaming: Option<&Subtask>,
     total: usize,
 ) -> Draft {
+    let done = renaming.is_some_and(|sub| sub.done());
     let lead = format!("  › {} ", if done { theme::TICKED } else { theme::BOX });
     let column = unicode_width::UnicodeWidthStr::width(lead.as_str());
-    let room = total.saturating_sub(column + 1);
-    let (shown, cursor) = super::footer::window(
-        input.value(),
-        input.visual_scroll(room),
-        input.visual_cursor(),
-        room,
-    );
-    let text = if shown.is_empty() {
-        Span::styled("add a subtask…", theme::faint())
-    } else {
-        Span::styled(shown, theme::text())
-    };
-    let mut spans = vec![Span::styled(lead, Style::new().fg(theme::ACCENT)), text];
-    pad(&mut spans, total);
-    let spans = spans
-        .into_iter()
-        .map(|span| span.patch_style(Style::new().bg(theme::SELECTED)))
-        .collect::<Vec<_>>();
-    let line = lines.len();
-    lines.push(Line::from(spans));
-    Draft {
-        line,
+    let room = card.field.width(total);
+    let value = card.input.value();
+    let (row, cursor) = locate(value, card.input.cursor(), room);
+    let draft = Draft {
+        line: lines.len() + row,
         column: column + cursor,
+    };
+    let rows = if value.is_empty() {
+        let hint = if renaming.is_some() {
+            "type a title…"
+        } else {
+            "add a subtask…"
+        };
+        vec![Span::styled(hint, theme::faint())]
+    } else {
+        wrap(value, room)
+            .into_iter()
+            .map(|text| Span::styled(text, theme::text()))
+            .collect()
+    };
+    for (index, text) in rows.into_iter().enumerate() {
+        let lead = if index == 0 {
+            Span::styled(lead.clone(), Style::new().fg(theme::ACCENT))
+        } else {
+            Span::raw(" ".repeat(column))
+        };
+        let mut spans = vec![lead, text];
+        pad(&mut spans, total);
+        let spans = spans
+            .into_iter()
+            .map(|span| span.patch_style(Style::new().bg(theme::SELECTED)))
+            .collect::<Vec<_>>();
+        lines.push(Line::from(spans));
     }
+    draft
 }
 
-fn note(lines: &mut Vec<Line<'static>>, task: &Task, query: &str, total: usize) {
+fn note(
+    lines: &mut Vec<Line<'static>>,
+    task: &Task,
+    query: &str,
+    card: Option<&Card>,
+    total: usize,
+    draft: &mut Option<Draft>,
+) {
+    let editing = card.filter(|card| card.field == Field::Note);
+    let heading = if editing.is_some() {
+        Style::new().fg(theme::ACCENT)
+    } else {
+        theme::muted()
+    };
     lines.push(Line::styled(
         format!("{MARGIN}NOTE"),
-        theme::muted().add_modifier(Modifier::BOLD),
+        heading.add_modifier(Modifier::BOLD),
     ));
-    if task.note.trim().is_empty() {
-        lines.push(Line::styled(
-            format!("{MARGIN}No note · ctrl-g writes one in $EDITOR"),
-            theme::muted(),
-        ));
+    let room = Field::Note.width(total);
+    if let Some(card) = editing {
+        let text = card.input.value();
+        let (row, column) = locate(text, card.input.cursor(), room);
+        *draft = Some(Draft {
+            line: lines.len() + row,
+            column: MARGIN.len() + column,
+        });
+        if text.is_empty() {
+            lines.push(Line::styled(format!("{MARGIN}add a note…"), theme::faint()));
+        } else {
+            for row in wrap(text, room) {
+                lines.push(Line::styled(format!("{MARGIN}{row}"), theme::text()));
+            }
+        }
         return;
     }
-    for text in wrap(task.note.trim_end(), total.saturating_sub(4)) {
+    if task.note.trim().is_empty() {
+        let (hint, style) = if card.is_some() {
+            ("add a note…", theme::faint())
+        } else {
+            ("No note · ctrl-g writes one in $EDITOR", theme::muted())
+        };
+        lines.push(Line::styled(format!("{MARGIN}{hint}"), style));
+        return;
+    }
+    for text in wrap(task.note.trim_end(), room) {
         let mut spans = vec![Span::raw(MARGIN)];
         spans.extend(marked(&text, query, theme::text()));
         lines.push(Line::from(spans));

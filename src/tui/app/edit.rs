@@ -224,6 +224,7 @@ impl App {
                 }
                 if *detaches {
                     self.patch(task_ref, |local| take_identity(local, &saved));
+                    self.repin_card(task_ref, &saved_ref);
                 }
                 self.clamp();
             }
@@ -236,6 +237,7 @@ impl App {
                     && old != saved_ref
                 {
                     self.patch(&old, |local| take_identity(local, &saved));
+                    self.repin_card(&old, &saved_ref);
                 }
             }
             _ => {}

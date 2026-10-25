@@ -56,7 +56,7 @@ Stable handles are the text the UI draws, not coordinates:
 - Header: the long date and `Today`, `Now` in the 24h view, or `Inbox` and `N open`, plus the week strip and `Inbox N`. With `timezones` configured it ends with the zone clock, like `02:39 Saigon`.
 - List title: `Today · N tasks` (day view), `Now · N tasks` (24h view), `Inbox · N tasks`, or a date, with `/query` while a search is applied. Right side: `N late` in yellow when any, `N done`, and `planned`.
 - Footer in the list: `⏎ subtasks`, `x done`, `f find`, `m min`, `? help`. In the checklist: a `SUBTASKS` chip and `x tick`, `h back`.
-- Footer chips: `FIND` with `/query`, a prompt name (`NEW TASK`, `TITLE`, `DATE`, `TIME`, `DURATION`, `NEW SUBTASK`, `SUBTASK`) plus `every repeat` or `this day only` on a recurring task, `DELETE`, `HELP`.
+- Footer chips: `FIND` with `/query`, a prompt name (`NEW TASK`, `DATE`, `TIME`, `DURATION`), an edit card field (`TITLE`, `SUBTASK`, `NEW SUBTASK`, `NOTE`) with `Details · editing` on the pane, either plus `every repeat` or `this day only` on a recurring task, `DELETE`, `HELP`.
 - Status: `· times in LABEL` after `z`, `· 24h view, …` and `· day view, …` after `w`, `● saving…`, `✓ saved`, `✓ subtasks saved`, `✗ <error>`, `· task kept`, and `● finishing N saves, q again quits now` after `q` with saves pending.
 - Help modal: `Keys`, `next, previous`, `minutes`, `Subtasks`.
 - Confirm modal: `Delete task` or `Delete subtask`, and `y delete`.
@@ -65,7 +65,7 @@ The cursor of a prompt is a real terminal cursor, so a text capture does not sho
 
 Read [features/README.md](features/README.md) and drive the feature file that matches the change. A proof of one entry point does not cover the others listed there.
 
-Keys that write, as soon as they are pressed or as soon as Enter or `y` confirms: `x`, Space, `a`/`e`/`D`/`T`/`m` then Enter, `,`, `.`, `d` then `y`, and in the checklist `x`, Space, `a`/`e` then Enter, `d` then `y`. In a live run do not send them unless the user authorized that write and `STRUCTURED_VERIFY_WRITES=1` is set. In a `--fixture` run they are safe. Opening a prompt and pressing Escape never writes.
+Keys that write, as soon as they are pressed or as soon as Enter or `y` confirms: `x`, Space, `a`/`D`/`T`/`m` then Enter, `,`, `.`, `d` then `y`, and in the checklist `x`, Space, `d` then `y`. In the edit card (`e`, `A`, or `a`/`e` in the checklist) a changed field writes on `tab`, an arrow out of it, Enter, or Escape. In a live run do not send them unless the user authorized that write and `STRUCTURED_VERIFY_WRITES=1` is set. In a `--fixture` run they are safe. Opening a prompt and pressing Escape never writes. Opening the edit card and pressing Escape without typing never writes.
 
 ## Evidence
 

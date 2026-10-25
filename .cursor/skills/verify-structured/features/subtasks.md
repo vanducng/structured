@@ -7,8 +7,8 @@ The checklist in the details pane. Enter moves focus into it, and its keys tick,
 - `sub-open` focuses the checklist with `enter` or `l`. The footer shows a `SUBTASKS` chip.
 - `sub-move` moves the `›` marker with `j`, `k`, and the arrows.
 - `sub-tick` flips `☐` and `☑` with `x` or Space. The list row's `n/m` count follows. A row still being created cannot be ticked yet.
-- `sub-add` opens `NEW SUBTASK` with `a` (or `A` from the list). The draft is typed in place as a new checklist row. Enter saves it and opens the next row; Enter on an empty row or Escape stops.
-- `sub-rename` opens `SUBTASK` with `e` and edits the row in place. Enter renames.
+- `sub-add` opens the [edit card](./edit.md) on a new row (`NEW SUBTASK`) with `a`, or `A` from the list. Enter saves it and opens the next row. Escape saves what is typed and closes.
+- `sub-rename` opens the edit card on the selected row (`SUBTASK`) with `e`. Escape or Tab saves the new title.
 - `sub-reorder` moves the row with `J` and `K`.
 - `sub-delete` asks with `d` (`Delete subtask`) and removes on `y`.
 - `sub-back` returns to the list with `h`, `esc`, or `←`.
@@ -28,9 +28,9 @@ Preconditions:
 
 - **Open.** `keys -- j j j j j j Enter`, `shot sub-open`. The footer has `SUBTASKS` and `x tick`. The details pane shows `SUBTASKS  1/3` in the accent color and `›` on the first row.
 - **Tick.** `keys -- j x`, wait a beat, `shot sub-tick`. The second row is `☑` and struck, the list row reads `2/3`, the status reads `✓ subtasks saved`. `calls` shows one `update_task` with three subtasks, all with ids, and no `update_action`.
-- **Add.** `keys -- a`, `type "Write the runbook"`, `shot sub-add-draft`: the draft is a highlighted row inside the checklist. `keys -- Enter`, `shot sub-add`: the row is saved and an empty draft row with a faint `add a subtask…` opens below it. `keys -- Escape`: the status reads `✓ 1 subtask added`. `calls` shows a subtask with only a title.
+- **Add.** `keys -- a`, `type "Write the runbook"`, `shot sub-add-draft`: the draft is a highlighted row inside the checklist. `keys -- Enter`, `shot sub-add`: the row is saved and an empty draft row with a faint `add a subtask…` opens below it. `keys -- Escape`: the empty draft closes without a write and the status reads `✓ subtasks saved`. `calls` shows a subtask with only a title.
 - **Reorder.** `keys -- K`. The row moves up and `calls` shows the reordered list.
-- **Rename.** `keys -- e C-u`, `type "Runbook"`, `keys -- Enter`. The row reads `Runbook`.
+- **Rename.** `keys -- e C-u`, `type "Runbook"`, `keys -- Escape`. The row reads `Runbook`.
 - **From the list.** `keys -- h A`, `type "Ship it"`, `keys -- Enter Escape`. A row is added without opening the checklist first.
 - **Delete.** `keys -- d`, `shot sub-delete-ask` shows `Delete subtask` and `y delete`. `keys -- y` removes the row and `calls` shows three subtasks.
 - **Back.** `keys -- h`. The chip is gone and the footer shows `⏎ subtasks`.

@@ -118,34 +118,11 @@ pub(super) fn fit(text: &str, max: usize) -> String {
     out
 }
 
-/// Greedy word wrap that also hard-breaks words longer than the line.
 pub(super) fn wrap(text: &str, max: usize) -> Vec<String> {
-    let max = max.max(1);
-    let mut lines = Vec::new();
-    for paragraph in text.split('\n') {
-        let mut line = String::new();
-        for word in paragraph.split(' ') {
-            let gap = usize::from(!line.is_empty());
-            if line.width() + gap + word.width() <= max {
-                if gap == 1 {
-                    line.push(' ');
-                }
-                line.push_str(word);
-                continue;
-            }
-            if !line.is_empty() {
-                lines.push(std::mem::take(&mut line));
-            }
-            for ch in word.chars() {
-                if line.width() + ch.width().unwrap_or(0) > max {
-                    lines.push(std::mem::take(&mut line));
-                }
-                line.push(ch);
-            }
-        }
-        lines.push(line);
-    }
-    lines
+    super::wrap::rows(text, max)
+        .into_iter()
+        .map(|row| text[row].to_owned())
+        .collect()
 }
 
 pub(super) fn pad(spans: &mut Vec<Span<'static>>, total: usize) {

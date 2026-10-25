@@ -48,19 +48,18 @@ impl App {
         })
     }
 
-    pub(super) fn add_subtask(&mut self, title: String) -> Option<Request> {
+    pub(super) fn add_subtask(&mut self, at: usize, title: String) -> Option<Request> {
         let request = self.change_subtasks(true, |subs| {
-            subs.push(Subtask::new(&title));
+            subs.insert(at.min(subs.len()), Subtask::new(&title));
             Some(())
         });
         if request.is_some() {
-            self.sub_selected = self.subtask_count().saturating_sub(1);
+            self.sub_selected = at.min(self.subtask_count().saturating_sub(1));
         }
         request
     }
 
-    pub(super) fn rename_subtask(&mut self, title: String) -> Option<Request> {
-        let pick = self.sub_selected;
+    pub(super) fn rename_subtask(&mut self, pick: usize, title: String) -> Option<Request> {
         self.change_subtasks(true, |subs| {
             subs.get_mut(pick)?.title = title;
             Some(())
