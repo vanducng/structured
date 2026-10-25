@@ -6,7 +6,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthChar;
 
 use super::width;
-use crate::tui::app::{App, Focus, Mode, Prompt, Tone};
+use crate::tui::app::{App, Field, Focus, Mode, Prompt, Tone};
 use crate::tui::theme;
 
 type Hints = &'static [(&'static str, &'static str)];
@@ -35,7 +35,7 @@ const SEARCHED: Hints = &[
 const SUBTASKS: Hints = &[
     ("x", "tick"),
     ("a", "add"),
-    ("e", "rename"),
+    ("e", "edit"),
     ("d", "delete"),
     ("J K", "move"),
     ("h", "back"),
@@ -47,42 +47,46 @@ const CONFIRM: Hints = &[("y", "delete"), ("any other key", "keeps it")];
 const HELP: Hints = &[("any key", "closes")];
 const PROMPT: Hints = &[("⏎", "save"), ("esc", "cancel")];
 const STEP: Hints = &[("⏎", "save"), ("↑↓", "step"), ("esc", "cancel")];
-const SUBTASK_DRAFT: Hints = &[("⏎", "add, then the next"), ("esc", "done")];
+const CARD_TITLE: Hints = &[
+    ("tab", "next"),
+    ("⏎", "subtasks"),
+    ("ctrl-c", "undo"),
+    ("esc", "done"),
+];
+const CARD_SUBTASK: Hints = &[
+    ("tab", "next"),
+    ("⏎", "new row"),
+    ("↑↓", "row"),
+    ("ctrl-c", "undo"),
+    ("esc", "done"),
+];
+const CARD_NEW_SUBTASK: Hints = &[
+    ("tab", "next"),
+    ("⏎", "add, then the next"),
+    ("↑↓", "row"),
+    ("esc", "done"),
+];
+const CARD_NOTE: Hints = &[
+    ("tab", "next"),
+    ("⏎", "new line"),
+    ("ctrl-g", "$EDITOR"),
+    ("ctrl-c", "undo"),
+    ("esc", "done"),
+];
 
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let total = area.width as usize;
     match &app.mode {
         Mode::Input { input, prompt } => {
-            let mut left = vec![Span::styled(
-                format!(" {} ", prompt.label().to_uppercase()),
-                theme::chip(theme::ACCENT),
-            )];
-            if let Some((scope, series)) = scope(app, *prompt) {
-                let style = if series {
-                    Style::new().fg(theme::WARN)
-                } else {
-                    theme::muted()
-                };
-                left.push(Span::styled(format!(" {scope}"), style));
-            }
+            let series = match prompt {
+                Prompt::Time | Prompt::Duration => Some(true),
+                Prompt::Day => Some(false),
+                Prompt::NewTitle => None,
+            };
+            let mut left = chip(app, prompt.label(), series);
             left.push(Span::raw("  "));
-            let hints = match prompt {
-                Prompt::NewSubtask => SUBTASK_DRAFT,
-                _ if prompt.steps() => STEP,
-                _ => PROMPT,
-            };
-            let right = if app.status.tone == Tone::Bad {
-                vec![Span::styled(
-                    format!("✗ {}  ", app.status.text),
-                    Style::new().fg(theme::BAD),
-                )]
-            } else {
-                keys(hints)
-            };
-            if prompt.inline() {
-                left.push(Span::styled(prompt.hint().to_owned(), theme::muted()));
-                return render(frame, area, left, right, None);
-            }
+            let right =
+                rejected(app).unwrap_or_else(|| keys(if prompt.steps() { STEP } else { PROMPT }));
             let room = total
                 .saturating_sub(width(&left) + width(&right) + 1)
                 .max(8);
@@ -99,6 +103,21 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             );
             left.push(Span::styled(shown, theme::text()));
             render(frame, area, left, right, Some((cursor + offset) as u16));
+        }
+        Mode::Card(card) => {
+            let mut left = chip(app, card.field.label(), Some(card.field.series()));
+            if let Some(right) = rejected(app) {
+                return render(frame, area, left, right, None);
+            }
+            left.push(status(app));
+            let hints = match card.field {
+                Field::Title => CARD_TITLE,
+                Field::Subtask(_) => CARD_SUBTASK,
+                Field::NewSubtask(_) => CARD_NEW_SUBTASK,
+                Field::Note => CARD_NOTE,
+            };
+            let room = total.saturating_sub(width(&left) + 2);
+            render(frame, area, left, fitted(hints, room), None);
         }
         Mode::Filter => {
             let left = vec![
@@ -138,16 +157,28 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-/// On a recurring day, says how far the edit reaches; the bool marks series-wide edits.
-fn scope(app: &App, prompt: Prompt) -> Option<(&'static str, bool)> {
-    if !app.selected_task().is_some_and(|task| task.is_recurring) {
-        return None;
+/// The editor's name, and on a recurring day how far the edit reaches. `series` marks series-wide edits.
+fn chip(app: &App, label: &str, series: Option<bool>) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        format!(" {} ", label.to_uppercase()),
+        theme::chip(theme::ACCENT),
+    )];
+    let recurring = app.selected_task().is_some_and(|task| task.is_recurring);
+    match series.filter(|_| recurring) {
+        Some(true) => spans.push(Span::styled(" every repeat", Style::new().fg(theme::WARN))),
+        Some(false) => spans.push(Span::styled(" this day only", theme::muted())),
+        None => {}
     }
-    match prompt {
-        Prompt::Title | Prompt::Time | Prompt::Duration => Some(("every repeat", true)),
-        Prompt::Day | Prompt::NewSubtask | Prompt::SubtaskTitle => Some(("this day only", false)),
-        Prompt::NewTitle => None,
-    }
+    spans
+}
+
+fn rejected(app: &App) -> Option<Vec<Span<'static>>> {
+    (app.status.tone == Tone::Bad).then(|| {
+        vec![Span::styled(
+            format!("✗ {}  ", app.status.text),
+            Style::new().fg(theme::BAD),
+        )]
+    })
 }
 
 /// Slices the draft by display columns so wide characters keep the cursor aligned.

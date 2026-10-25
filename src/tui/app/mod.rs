@@ -1,3 +1,7 @@
+mod card;
+mod card_keys;
+#[cfg(test)]
+mod card_tests;
 mod edit;
 mod editor;
 mod input;
@@ -12,6 +16,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
+pub(in crate::tui) use card::{Card, Field};
 pub(in crate::tui) use keys::handle;
 
 use crate::agenda::{self, Clock, Layout};
@@ -30,6 +35,7 @@ pub(in crate::tui) enum Mode {
         input: tui_input::Input,
         prompt: Prompt,
     },
+    Card(Card),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,45 +47,32 @@ pub(in crate::tui) enum Doomed {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(in crate::tui) enum Prompt {
     NewTitle,
-    Title,
     Day,
     Time,
     Duration,
-    NewSubtask,
-    SubtaskTitle,
 }
 
 impl Prompt {
     pub(in crate::tui) fn label(self) -> &'static str {
         match self {
             Self::NewTitle => "New task",
-            Self::Title => "Title",
             Self::Day => "Date",
             Self::Time => "Time",
             Self::Duration => "Duration",
-            Self::NewSubtask => "New subtask",
-            Self::SubtaskTitle => "Subtask",
         }
     }
 
     pub(in crate::tui) fn hint(self) -> &'static str {
         match self {
-            Self::NewTitle | Self::Title => "type a title",
+            Self::NewTitle => "type a title",
             Self::Day => "YYYY-MM-DD, today, +1, or inbox",
             Self::Time => "09:30, 09:30 45, or empty for all day",
             Self::Duration => "45, 1h30, or 1:30",
-            Self::NewSubtask => "typing in the checklist",
-            Self::SubtaskTitle => "editing in the checklist",
         }
     }
 
     pub(in crate::tui) fn steps(self) -> bool {
         matches!(self, Self::Day | Self::Time | Self::Duration)
-    }
-
-    /// Subtask drafts are typed in place in the checklist, like the app's "Add Subtask" row.
-    pub(in crate::tui) fn inline(self) -> bool {
-        matches!(self, Self::NewSubtask | Self::SubtaskTitle)
     }
 }
 
@@ -153,6 +146,8 @@ pub(in crate::tui) struct App {
     pub(in crate::tui) query: String,
     pub(in crate::tui) detail_scroll: u16,
     pub(in crate::tui) list_offset: Cell<usize>,
+    /// The details pane's wrap width at the last draw, so up and down can walk wrapped rows.
+    pub(in crate::tui) text_width: Cell<usize>,
     pub(in crate::tui) config: UiConfig,
     cache: HashMap<CacheKey, Vec<Task>>,
     want: Option<CacheKey>,
@@ -165,7 +160,6 @@ pub(in crate::tui) struct App {
     checks: Vec<(TaskRef, bool)>,
     detaching: Vec<(TaskRef, CacheKey)>,
     pub(in crate::tui) quitting: bool,
-    added_run: usize,
 }
 
 impl App {
@@ -188,6 +182,7 @@ impl App {
             query: String::new(),
             detail_scroll: 0,
             list_offset: Cell::new(0),
+            text_width: Cell::new(0),
             config,
             cache: HashMap::new(),
             want: None,
@@ -200,7 +195,6 @@ impl App {
             checks: Vec::new(),
             detaching: Vec::new(),
             quitting: false,
-            added_run: 0,
         }
     }
 
@@ -252,6 +246,15 @@ impl App {
         self.set_query(String::new());
     }
 
+    /// Why a write did not go out, for a draft that stays open.
+    fn refusal(&self) -> String {
+        if self.status.text.is_empty() {
+            "not saved, try again".into()
+        } else {
+            self.status.text.clone()
+        }
+    }
+
     pub(in crate::tui) fn say(&mut self, tone: Tone, text: impl Into<String>) {
         self.status = Status {
             text: text.into(),
@@ -295,10 +298,17 @@ impl App {
     }
 
     pub(in crate::tui) fn selected_task(&self) -> Option<&Task> {
-        self.visible().into_iter().nth(self.selected)
+        self.selected_index().map(|index| &self.tasks[index])
     }
 
+    /// An open card stays on its own task, even when the list under it shifts or filters it out.
     fn selected_index(&self) -> Option<usize> {
+        if let Mode::Card(card) = &self.mode {
+            return self
+                .tasks
+                .iter()
+                .position(|task| task.task_ref().ok().as_ref() == Some(&card.task_ref));
+        }
         let clock = Clock::now();
         self.tasks
             .iter()
@@ -416,6 +426,7 @@ impl App {
             }
             Reply::WriteFailed { message } => self.finish_write(Err(()), message),
         }
+        self.settle_card();
     }
 
     fn apply_load(&mut self, epoch: u64, key: CacheKey, mut tasks: Vec<Task>, show: bool) {

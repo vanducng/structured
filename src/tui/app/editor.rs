@@ -18,8 +18,29 @@ pub(super) fn edit_note(
     let Some((index, _)) = app.selected_ref() else {
         return Ok(());
     };
-    let previous = app.tasks[index].note.clone();
-    let path = scratch_file(&previous)?;
+    let previous = app.tasks[index].note.trim_end_matches('\n').to_owned();
+    let Some(next) = edit_text(terminal, app, &previous)? else {
+        return Ok(());
+    };
+    if next == previous {
+        app.say(Tone::Quiet, "note unchanged");
+        return Ok(());
+    }
+    let recurring = app.tasks[index].is_recurring;
+    send(tx, app.update_note(next, previous));
+    if recurring {
+        app.say(Tone::Busy, "saving the note for every repeat…");
+    }
+    Ok(())
+}
+
+/// Runs the editor on `body`. None when nothing came back to use; the status says why.
+pub(super) fn edit_text(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    body: &str,
+) -> Result<Option<String>> {
+    let path = scratch_file(body)?;
     ratatui::restore();
     let edited = run_editor(&path);
     resume(terminal)?;
@@ -29,32 +50,21 @@ pub(super) fn edit_note(
         Ok(true) => {}
         Ok(false) => {
             app.say(Tone::Quiet, "editor closed without saving");
-            return Ok(());
+            return Ok(None);
         }
         Err(err) => {
             app.say(
                 Tone::Bad,
                 format!("could not start {}: {err}", editor_program()),
             );
-            return Ok(());
+            return Ok(None);
         }
     }
-    let Ok(note) = read else {
+    let Ok(text) = read else {
         app.say(Tone::Bad, "could not read the note back, it is unchanged");
-        return Ok(());
+        return Ok(None);
     };
-    let next = note.trim_end_matches('\n').to_owned();
-    let prev = previous.trim_end_matches('\n');
-    if next == prev {
-        app.say(Tone::Quiet, "note unchanged");
-        return Ok(());
-    }
-    let recurring = app.tasks[index].is_recurring;
-    send(tx, app.update_note(next, prev.to_owned()));
-    if recurring {
-        app.say(Tone::Busy, "saving the note for every repeat…");
-    }
-    Ok(())
+    Ok(Some(text.trim_end_matches('\n').to_owned()))
 }
 
 /// create_new refuses a planted symlink in a shared temp dir, and 0600 keeps the note private.

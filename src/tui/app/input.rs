@@ -23,14 +23,10 @@ pub(super) fn prompt_key(app: &mut App, tx: &Sender<Request>, key: KeyEvent) -> 
     };
     let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
     match key.code {
-        KeyCode::Esc => finish_prompt(app, prompt),
-        _ if ctrl_c => finish_prompt(app, prompt),
+        _ if ctrl_c || key.code == KeyCode::Esc => app.say(Tone::Quiet, "cancelled"),
         KeyCode::Enter => {
             let draft = input.value().trim().to_owned();
             match submit(app, tx, &draft, prompt) {
-                Ok(()) if prompt == Prompt::NewSubtask && !draft.is_empty() => {
-                    app.mode = self::prompt(Prompt::NewSubtask, String::new());
-                }
                 Ok(()) => {}
                 Err(message) => {
                     if message != app.status.text {
@@ -63,17 +59,6 @@ pub(super) fn prompt_key(app: &mut App, tx: &Sender<Request>, key: KeyEvent) -> 
     false
 }
 
-/// Ending a quick-add run reports what was added instead of "cancelled".
-fn finish_prompt(app: &mut App, prompt: Prompt) {
-    let added = std::mem::take(&mut app.added_run);
-    match added {
-        0 => app.say(Tone::Quiet, "cancelled"),
-        _ if prompt != Prompt::NewSubtask => app.say(Tone::Quiet, "cancelled"),
-        1 => app.say(Tone::Good, "1 subtask added"),
-        n => app.say(Tone::Good, format!("{n} subtasks added")),
-    }
-}
-
 fn anchor(app: &App) -> chrono::NaiveDate {
     app.selected_task()
         .and_then(|task| task.day.as_deref())
@@ -83,30 +68,14 @@ fn anchor(app: &App) -> chrono::NaiveDate {
 
 fn submit(app: &mut App, tx: &Sender<Request>, draft: &str, prompt: Prompt) -> Result<(), String> {
     let request = match prompt {
-        Prompt::NewSubtask if draft.is_empty() => {
-            finish_prompt(app, prompt);
-            return Ok(());
-        }
-        Prompt::NewTitle | Prompt::Title | Prompt::SubtaskTitle if draft.is_empty() => {
-            return Err("a title is required".into());
-        }
+        Prompt::NewTitle if draft.is_empty() => return Err("a title is required".into()),
         Prompt::NewTitle => Some(app.queue_add(draft.to_owned())),
-        Prompt::Title => app.rename(draft.to_owned()),
-        Prompt::NewSubtask => {
-            app.added_run += 1;
-            app.add_subtask(draft.to_owned())
-        }
-        Prompt::SubtaskTitle => app.rename_subtask(draft.to_owned()),
         Prompt::Day => app.reschedule(Spec::Date(schedule::parse_date(draft, anchor(app))?)),
         Prompt::Time => app.reschedule(Spec::Clock(schedule::parse_clock(draft)?)),
         Prompt::Duration => app.reschedule(Spec::Duration(schedule::parse_duration(draft)?)),
     };
     if request.is_none() {
-        return Err(if app.status.text.is_empty() {
-            "not saved, try again".into()
-        } else {
-            app.status.text.clone()
-        });
+        return Err(app.refusal());
     }
     send(tx, request);
     Ok(())

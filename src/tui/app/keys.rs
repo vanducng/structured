@@ -4,7 +4,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::error::Result;
 
-use super::{App, Doomed, Focus, Mode, Prompt, Tone};
+use super::{App, Doomed, Field, Focus, Mode, Prompt, Tone};
 use crate::tui::worker::Request;
 
 /// Returns true when the app should quit.
@@ -17,6 +17,14 @@ pub(in crate::tui) fn handle(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match app.mode {
         Mode::Input { .. } => return Ok(super::input::prompt_key(app, tx, key)),
+        Mode::Card(_) if ctrl && key.code == KeyCode::Char('g') => {
+            super::card_keys::edit_note(terminal, app, tx)?;
+            return Ok(false);
+        }
+        Mode::Card(_) => {
+            super::card_keys::key(app, tx, key);
+            return Ok(false);
+        }
         Mode::Filter => return Ok(super::input::filter_key(app, key)),
         _ if ctrl && key.code == KeyCode::Char('c') => return Ok(true),
         Mode::Help => {
@@ -105,7 +113,7 @@ fn list_key(app: &mut App, tx: &Sender<Request>, code: KeyCode) -> bool {
         }
         KeyCode::Char('A') => {
             if app.focus_subtasks() {
-                app.mode = super::input::prompt(Prompt::NewSubtask, String::new());
+                app.open_card(Field::NewSubtask(app.subtask_count()));
             }
         }
         KeyCode::Esc if !app.query.is_empty() => app.clear_query(),
@@ -139,7 +147,7 @@ fn list_key(app: &mut App, tx: &Sender<Request>, code: KeyCode) -> bool {
         KeyCode::Char('N') if !app.query.is_empty() => step_match(app, -1),
         KeyCode::Char('f') => app.mode = Mode::Filter,
         KeyCode::Char('a') => app.mode = super::input::prompt(Prompt::NewTitle, String::new()),
-        KeyCode::Char('e') => open_prompt(app, Prompt::Title),
+        KeyCode::Char('e') => app.open_card(Field::Title),
         KeyCode::Char('D') => open_prompt(app, Prompt::Day),
         KeyCode::Char('T') => open_prompt(app, Prompt::Time),
         KeyCode::Char('m') => open_prompt(app, Prompt::Duration),
@@ -161,8 +169,8 @@ fn subtask_key(app: &mut App, tx: &Sender<Request>, code: KeyCode) -> bool {
         KeyCode::Char('k') | KeyCode::Up => app.move_subtask(-1),
         KeyCode::Char('h') | KeyCode::Left | KeyCode::Esc => app.focus = Focus::List,
         KeyCode::Char('x') | KeyCode::Char(' ') if has_one => send(tx, app.toggle_subtask()),
-        KeyCode::Char('a') => app.mode = super::input::prompt(Prompt::NewSubtask, String::new()),
-        KeyCode::Char('e') if has_one => open_prompt(app, Prompt::SubtaskTitle),
+        KeyCode::Char('a') => app.open_card(Field::NewSubtask(app.subtask_count())),
+        KeyCode::Char('e') if has_one => app.open_card(Field::Subtask(app.sub_selected)),
         KeyCode::Char('d') if has_one => app.mode = Mode::Confirm(Doomed::Subtask),
         KeyCode::Char('J') if has_one => send(tx, app.reorder_subtask(1)),
         KeyCode::Char('K') if has_one => send(tx, app.reorder_subtask(-1)),
@@ -200,7 +208,6 @@ fn open_prompt(app: &mut App, prompt: Prompt) {
         return;
     };
     let draft = match prompt {
-        Prompt::Title => task.title.clone(),
         Prompt::Day => task.day.clone().unwrap_or_default(),
         Prompt::Time => task.timed().map(crate::clock::clock).unwrap_or_default(),
         Prompt::Duration => task
@@ -208,12 +215,7 @@ fn open_prompt(app: &mut App, prompt: Prompt) {
             .filter(|mins| *mins > 0)
             .map(|mins| mins.to_string())
             .unwrap_or_default(),
-        Prompt::SubtaskTitle => task
-            .subtasks
-            .get(app.sub_selected)
-            .map(|sub| sub.title.clone())
-            .unwrap_or_default(),
-        Prompt::NewTitle | Prompt::NewSubtask => String::new(),
+        Prompt::NewTitle => String::new(),
     };
     app.mode = super::input::prompt(prompt, draft);
 }

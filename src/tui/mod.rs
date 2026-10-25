@@ -2,6 +2,7 @@ mod app;
 mod theme;
 mod view;
 mod worker;
+mod wrap;
 
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};

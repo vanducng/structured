@@ -126,7 +126,7 @@ fn subtask_edits_are_optimistic_and_revert_on_failure() {
         subtasks,
         structural,
         ..
-    }) = app.add_subtask("two".into())
+    }) = app.add_subtask(app.subtask_count(), "two".into())
     else {
         panic!("add sends the whole list");
     };
@@ -142,7 +142,7 @@ fn subtask_edits_are_optimistic_and_revert_on_failure() {
 #[test]
 fn server_subtask_ids_replace_local_drafts() {
     let mut app = app_with(vec![task("parent", false)]);
-    assert!(app.add_subtask("new".into()).is_some());
+    assert!(app.add_subtask(app.subtask_count(), "new".into()).is_some());
     let mut reply = task("parent", false);
     reply.subtasks = vec![Subtask {
         id: Some("server-id".into()),
@@ -178,7 +178,7 @@ fn adding_while_filtered_selects_the_new_task() {
 fn prompts_edit_with_a_cursor_and_ctrl_c_cancels() {
     let (tx, _rx) = mpsc::channel();
     let mut app = app_with(vec![task("alpha", false)]);
-    app.mode = input::prompt(Prompt::Title, "alpha".into());
+    app.mode = input::prompt(Prompt::NewTitle, "alpha".into());
     prompt_key(&mut app, &tx, key(KeyCode::Home));
     prompt_key(&mut app, &tx, key(KeyCode::Char('>')));
     let Mode::Input { input, .. } = &app.mode else {
@@ -191,7 +191,7 @@ fn prompts_edit_with_a_cursor_and_ctrl_c_cancels() {
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
     );
     assert!(matches!(app.mode, Mode::Normal));
-    assert_eq!(app.tasks[0].title, "alpha");
+    assert_eq!(app.tasks.len(), 1);
 }
 
 #[test]
@@ -249,29 +249,16 @@ fn rejected_values_keep_the_prompt_open() {
 }
 
 #[test]
-fn new_subtask_prompt_stays_open_for_the_next_item() {
-    let (tx, rx) = mpsc::channel();
-    let mut app = app_with(vec![task("parent", false)]);
-    app.focus = Focus::Subtasks;
-    app.mode = input::prompt(Prompt::NewSubtask, "one".into());
-    prompt_key(&mut app, &tx, key(KeyCode::Enter));
-    assert!(
-        matches!(&app.mode, Mode::Input { prompt: Prompt::NewSubtask, input } if input.value().is_empty())
-    );
-    assert!(rx.try_recv().is_ok());
-    prompt_key(&mut app, &tx, key(KeyCode::Enter));
-    assert!(matches!(app.mode, Mode::Normal));
-    assert_eq!(app.tasks[0].subtasks.len(), 1);
-}
-
-#[test]
 fn failed_reschedule_restores_only_the_schedule() {
     let mut original = task("a", false);
     original.day = Some(crate::clock::stamp(crate::clock::today()));
     original.start_time = Some(9.0);
     let mut app = app_with(vec![original]);
     assert!(app.reschedule(schedule::Spec::Duration(50)).is_some());
-    assert!(app.add_subtask("kept".into()).is_some());
+    assert!(
+        app.add_subtask(app.subtask_count(), "kept".into())
+            .is_some()
+    );
     app.finish_write(Err(()), "HTTP 500".into());
     assert_eq!(app.tasks[0].duration, None);
     assert_eq!(app.tasks[0].subtasks.len(), 1);
@@ -287,11 +274,14 @@ fn split_day_holds_writes_then_adopts_the_new_id() {
     let mut app = app_with(vec![day]);
     let Some(Request::Subtasks {
         structural: true, ..
-    }) = app.add_subtask("stretch".into())
+    }) = app.add_subtask(app.subtask_count(), "stretch".into())
     else {
         panic!("structural write");
     };
-    assert!(app.add_subtask("again".into()).is_none());
+    assert!(
+        app.add_subtask(app.subtask_count(), "again".into())
+            .is_none()
+    );
     assert_eq!(app.status.tone, Tone::Busy);
     let mut saved = task("run", false);
     saved.id = Some("detached".into());
@@ -308,7 +298,10 @@ fn split_day_holds_writes_then_adopts_the_new_id() {
         crate::model::TaskRef::Id("detached".into())
     );
     assert_eq!(local.subtasks[0].id.as_deref(), Some("s1"));
-    assert!(app.add_subtask("again".into()).is_some());
+    assert!(
+        app.add_subtask(app.subtask_count(), "again".into())
+            .is_some()
+    );
 }
 
 #[test]
@@ -367,30 +360,9 @@ fn find_matches_subtask_titles() {
 }
 
 #[test]
-fn a_held_write_keeps_the_typed_draft() {
-    let (tx, _rx) = mpsc::channel();
-    let mut day = task("run", false);
-    day.recurring_id = Some("rid".into());
-    day.is_recurring = true;
-    day.day = Some("2026-10-23".into());
-    let mut app = app_with(vec![day]);
-    app.focus = Focus::Subtasks;
-    app.mode = input::prompt(Prompt::NewSubtask, "Milk".into());
-    prompt_key(&mut app, &tx, key(KeyCode::Enter));
-    for ch in "Eggs".chars() {
-        prompt_key(&mut app, &tx, key(KeyCode::Char(ch)));
-    }
-    prompt_key(&mut app, &tx, key(KeyCode::Enter));
-    let Mode::Input { input, .. } = &app.mode else {
-        panic!("prompt closed")
-    };
-    assert_eq!(input.value(), "Eggs");
-}
-
-#[test]
 fn queued_writes_still_receive_new_subtask_ids() {
     let mut app = app_with(vec![task("parent", false)]);
-    assert!(app.add_subtask("x".into()).is_some());
+    assert!(app.add_subtask(app.subtask_count(), "x".into()).is_some());
     assert!(app.rename("renamed".into()).is_some());
     let mut saved = task("parent", false);
     saved.subtasks = vec![Subtask {
@@ -405,8 +377,8 @@ fn queued_writes_still_receive_new_subtask_ids() {
 #[test]
 fn a_failed_subtask_write_does_not_undo_a_later_one() {
     let mut app = app_with(vec![task("parent", false)]);
-    assert!(app.add_subtask("x".into()).is_some());
-    assert!(app.add_subtask("y".into()).is_some());
+    assert!(app.add_subtask(app.subtask_count(), "x".into()).is_some());
+    assert!(app.add_subtask(app.subtask_count(), "y".into()).is_some());
     app.finish_write(Err(()), "HTTP 500".into());
     assert_eq!(app.tasks[0].subtasks.len(), 2);
 }
@@ -418,16 +390,25 @@ fn holds_are_released_only_by_a_reload_of_their_own_view() {
     day.is_recurring = true;
     day.day = Some(crate::clock::stamp(crate::clock::today()));
     let mut app = app_with(vec![day.clone()]);
-    assert!(app.add_subtask("stretch".into()).is_some());
+    assert!(
+        app.add_subtask(app.subtask_count(), "stretch".into())
+            .is_some()
+    );
     app.finish_write(Ok(Some(day.clone())), "subtasks saved".into());
     let epoch = app.epoch;
     app.inbox = true;
     app.apply_load(epoch, CacheKey::Inbox, vec![], true);
     app.inbox = false;
     app.tasks = vec![day.clone()];
-    assert!(app.add_subtask("again".into()).is_none());
+    assert!(
+        app.add_subtask(app.subtask_count(), "again".into())
+            .is_none()
+    );
     app.apply_load(epoch, CacheKey::Today, vec![day], true);
-    assert!(app.add_subtask("again".into()).is_some());
+    assert!(
+        app.add_subtask(app.subtask_count(), "again".into())
+            .is_some()
+    );
 }
 
 #[test]
