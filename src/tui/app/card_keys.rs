@@ -87,20 +87,19 @@ pub(super) fn edit_note(
     Ok(())
 }
 
-/// Up and down walk the wrapped rows of the title and note, and stop at their ends.
+/// Up and down walk a field's wrapped rows first. The title and note stop at their ends.
 fn row_move(app: &App, card: &Card, up: bool) -> Option<usize> {
     let text = card.input.value();
     let moved = wrap::vertical(
         text,
         card.input.cursor(),
-        app.text_width.get(),
+        card.field.width(app.detail_width.get()),
         if up { -1 } else { 1 },
     );
     match (card.field, up) {
         (Field::Title, true) => Some(moved.unwrap_or(0)),
         (Field::Note, false) => Some(moved.unwrap_or(text.chars().count())),
-        (Field::Title | Field::Note, _) => moved,
-        _ => None,
+        _ => moved,
     }
 }
 

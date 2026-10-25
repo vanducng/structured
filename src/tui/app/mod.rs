@@ -146,8 +146,8 @@ pub(in crate::tui) struct App {
     pub(in crate::tui) query: String,
     pub(in crate::tui) detail_scroll: u16,
     pub(in crate::tui) list_offset: Cell<usize>,
-    /// The details pane's wrap width at the last draw, so up and down can walk wrapped rows.
-    pub(in crate::tui) text_width: Cell<usize>,
+    /// The details pane's inner width at the last draw, so up and down can walk wrapped rows.
+    pub(in crate::tui) detail_width: Cell<usize>,
     pub(in crate::tui) config: UiConfig,
     cache: HashMap<CacheKey, Vec<Task>>,
     want: Option<CacheKey>,
@@ -182,7 +182,7 @@ impl App {
             query: String::new(),
             detail_scroll: 0,
             list_offset: Cell::new(0),
-            text_width: Cell::new(0),
+            detail_width: Cell::new(0),
             config,
             cache: HashMap::new(),
             want: None,

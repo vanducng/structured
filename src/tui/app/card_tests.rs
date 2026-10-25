@@ -18,7 +18,7 @@ fn parent(subtasks: &[&str], note: &str) -> App {
     let mut app = App::new(UiConfig::default());
     app.tasks = vec![task];
     app.loaded = true;
-    app.text_width.set(20);
+    app.detail_width.set(24);
     app
 }
 
@@ -278,4 +278,16 @@ fn a_split_day_keeps_the_card_on_the_new_task() {
     assert!(
         matches!(&writes[..], [_, Request::Subtasks { task_ref, .. }] if *task_ref == crate::model::TaskRef::Id("detached".into()))
     );
+}
+
+#[test]
+fn a_long_subtask_wraps_and_arrows_walk_its_rows() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = parent(&["alpha beta gamma"], "");
+    app.detail_width.set(17);
+    app.open_card(Field::Subtask(0));
+    press(&mut app, &tx, KeyCode::Up);
+    assert_eq!((at(&app).0, at(&app).2), (Field::Subtask(0), 5));
+    press(&mut app, &tx, KeyCode::Up);
+    assert_eq!(at(&app).0, Field::Title);
 }

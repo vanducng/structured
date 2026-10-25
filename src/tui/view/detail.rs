@@ -52,7 +52,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
     let total = inner.width as usize;
-    app.text_width.set(total.saturating_sub(4));
+    app.detail_width.set(total);
     let mut draft = None;
     let title = card.filter(|card| card.field == Field::Title);
     let mut lines = band(task, title, total, &mut draft);
@@ -115,7 +115,7 @@ fn band(
     };
     let blank = Line::styled(" ".repeat(total), base);
     let mut lines = vec![blank.clone()];
-    let room = total.saturating_sub(4);
+    let room = Field::Title.width(total);
     let text = editing.map_or(task.title.as_str(), |card| card.input.value());
     if let Some(card) = editing {
         let (row, column) = locate(text, card.input.cursor(), room);
@@ -294,12 +294,12 @@ fn subtasks(
         if let Some(card) = card
             && card.field == Field::NewSubtask(index)
         {
-            *draft = Some(draft_row(lines, &card.input, None, total));
+            *draft = Some(draft_row(lines, card, None, total));
         }
         if let Some(card) = card
             && card.field == Field::Subtask(index)
         {
-            *draft = Some(draft_row(lines, &card.input, Some(sub), total));
+            *draft = Some(draft_row(lines, card, Some(sub), total));
             continue;
         }
         let current = card.is_none() && focused && index == app.sub_selected;
@@ -336,7 +336,7 @@ fn subtasks(
     }
     match card {
         Some(card) if card.field == Field::NewSubtask(count) => {
-            *draft = Some(draft_row(lines, &card.input, None, total));
+            *draft = Some(draft_row(lines, card, None, total));
         }
         Some(card) if !matches!(card.field, Field::NewSubtask(_)) => lines.push(Line::from(vec![
             Span::styled(format!("    {} ", theme::BOX), theme::muted()),
@@ -356,44 +356,51 @@ fn subtasks(
     selected
 }
 
+/// The row being typed wraps like the title and note, so a long subtask is never cut off.
 fn draft_row(
     lines: &mut Vec<Line<'static>>,
-    input: &tui_input::Input,
+    card: &Card,
     renaming: Option<&Subtask>,
     total: usize,
 ) -> Draft {
     let done = renaming.is_some_and(|sub| sub.done());
     let lead = format!("  › {} ", if done { theme::TICKED } else { theme::BOX });
     let column = unicode_width::UnicodeWidthStr::width(lead.as_str());
-    let room = total.saturating_sub(column + 1);
-    let (shown, cursor) = super::footer::window(
-        input.value(),
-        input.visual_scroll(room),
-        input.visual_cursor(),
-        room,
-    );
-    let text = if shown.is_empty() {
+    let room = card.field.width(total);
+    let value = card.input.value();
+    let (row, cursor) = locate(value, card.input.cursor(), room);
+    let draft = Draft {
+        line: lines.len() + row,
+        column: column + cursor,
+    };
+    let rows = if value.is_empty() {
         let hint = if renaming.is_some() {
             "type a title…"
         } else {
             "add a subtask…"
         };
-        Span::styled(hint, theme::faint())
+        vec![Span::styled(hint, theme::faint())]
     } else {
-        Span::styled(shown, theme::text())
+        wrap(value, room)
+            .into_iter()
+            .map(|text| Span::styled(text, theme::text()))
+            .collect()
     };
-    let mut spans = vec![Span::styled(lead, Style::new().fg(theme::ACCENT)), text];
-    pad(&mut spans, total);
-    let spans = spans
-        .into_iter()
-        .map(|span| span.patch_style(Style::new().bg(theme::SELECTED)))
-        .collect::<Vec<_>>();
-    let line = lines.len();
-    lines.push(Line::from(spans));
-    Draft {
-        line,
-        column: column + cursor,
+    for (index, text) in rows.into_iter().enumerate() {
+        let lead = if index == 0 {
+            Span::styled(lead.clone(), Style::new().fg(theme::ACCENT))
+        } else {
+            Span::raw(" ".repeat(column))
+        };
+        let mut spans = vec![lead, text];
+        pad(&mut spans, total);
+        let spans = spans
+            .into_iter()
+            .map(|span| span.patch_style(Style::new().bg(theme::SELECTED)))
+            .collect::<Vec<_>>();
+        lines.push(Line::from(spans));
     }
+    draft
 }
 
 fn note(
@@ -414,7 +421,7 @@ fn note(
         format!("{MARGIN}NOTE"),
         heading.add_modifier(Modifier::BOLD),
     ));
-    let room = total.saturating_sub(4);
+    let room = Field::Note.width(total);
     if let Some(card) = editing {
         let text = card.input.value();
         let (row, column) = locate(text, card.input.cursor(), room);

@@ -22,6 +22,14 @@ impl Field {
         }
     }
 
+    /// The wrap width in a details pane `pane` columns wide. Subtask rows sit behind the six-column `  › ☐ ` lead.
+    pub(in crate::tui) fn width(self, pane: usize) -> usize {
+        match self {
+            Self::Title | Self::Note => pane.saturating_sub(4),
+            Self::Subtask(_) | Self::NewSubtask(_) => pane.saturating_sub(7),
+        }
+    }
+
     /// On a recurring task a title or note edit reaches every repeat; a subtask edit stays on the day.
     pub(in crate::tui) fn series(self) -> bool {
         matches!(self, Self::Title | Self::Note)
